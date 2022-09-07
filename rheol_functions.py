@@ -138,6 +138,7 @@ def _read_antonpaar(file_url):
     with open(file_url, encoding='utf-16-le') as file:
         line_str = file.readline()
         is_data_line = False
+        reset_global_time = False  # Will be used to reset global time
         all_data = []
         step = 0
 
@@ -148,13 +149,17 @@ def _read_antonpaar(file_url):
                 is_data_line = False
                 data_now = pd.read_table(io.StringIO(data_str.replace(',','.')), delimiter='\t', skip_blank_lines=True, header=0, skiprows=[1,2])
                 data_now['step'] = step
+                data_now['reset_global_time'] = reset_global_time
                 step += 1
+                reset_global_time = False
                 all_data.append(data_now)
             elif is_data_line and '(invalid)' not in line_str: # Yeah, sometimes the rheometer is a bit playful ...
                 data_str = data_str + line_str
             elif 'Point No.' in line_str:
                 data_str = line_str
                 is_data_line=True
+            elif 'Test' in line_str: # New test means |> (play button) has been pressed in RheoCompass ==> New sample ==> Reset time_global
+                reset_global_time = True
 
         all_data = pd.concat(all_data).reset_index(drop=True)
         return all_data    
@@ -166,7 +171,7 @@ def _format_antonpaar(df):
     df['steptype'] = ''
     df['gap'] = np.nan # XXX to be fixed later
     df['normalforce'] = np.nan # XXX to be fixed later
-
+    
     if 'Intervalle Temps' in df.columns:
         df = df.rename(columns=antonpaar_mapper_fr)
     elif 'Interval Time' in df.columns:
@@ -175,6 +180,7 @@ def _format_antonpaar(df):
         print('> _format_antonpaar : Looks like you are using a Funky Language that I don''t understand ! ')
         raise ValueError
 
+    df = _fix_globaltime_antonpaar(df)
     df = df[[ 'step', 'name', 'steptype', 'time', 'time_global', 'shearrate', 'strain', 'stress', 'freq', 'gprime', 'gsecond', 'normalforce', 'temp', 'gap', 'status']]
     return df
 
@@ -204,12 +210,28 @@ def fix_strain_antonpaar(df, steps=None):
         df.loc[indexer, 'strain'] = np.concatenate(([0], cumtrapz(tm, sr)))
     return df
 
+def _fix_globaltime_antonpaar(df):
+    """ 
+    Function that fixes 'time_global'. I thought that this quantity
+    thing was really global, but it seems that for each 'procedure' (i.e. vertical tab
+    in Rheocompass), it resets. So I handle that here.
+    """
+
+    indices, = np.where(df['time_global'].diff() < 0)
+    t_refs = df['time_global'].iloc[indices-1]
+
+    for idx, t_ref in zip(indices, t_refs):
+        if not df.loc[idx, 'reset_global_time']:
+            df.loc[idx:,'time_global'] += t_ref
+
+    return df
+
 ###############################################################################################
 ## MALVERN FUNCTIONS -------------------------------------------------------------------------
 
-malvern_mapper =  {'Time (action)(s)': 'time',  'Shear rate(s-¹)': 'shearrate', 'Shear stress(Pa)': 'stress', 
+malvern_mapper =  {'Time (action)(s)': 'time',  'Time (sequence)(s)': 'time_global', 'Shear rate(s-¹)': 'shearrate', 'Shear stress(Pa)': 'stress', 
                    'Shear strain(%)': 'strain', 'Frequency(Hz)': 'freq', 'Shear modulus (elastic component)(Pa)': 'gprime', 
-                   'Shear modulus (viscous component)(Pa)': 'gsecond','Normal force(N)': 'normalforce', 'Gap(mm)': 'gap'}
+                   'Shear modulus (viscous component)(Pa)': 'gsecond','Normal force(N)': 'normalforce', 'Gap(mm)': 'gap', 'Torque(N m)':'torque'}
 
     # For Malvern, well there ain't much to do ...
 
@@ -226,10 +248,8 @@ def _format_malvern(df):
         if df.iloc[index]['Action Name'] != action:
             new_step[index] = 1
             action = df.iloc[index]['Action Name']
-    dt_long[new_step] = df['Time (action)(s)'][new_step]
     df['name'] = df['Action Name']
     df['step'] = np.cumsum(new_step).astype(int)
-    df['time_global'] = np.cumsum(dt_long)
     df['steptype'] = ['']*n
     df['temp'] = np.ones(n)*np.nan # XXX to be fixed later
     df['status'] = ['']*n
@@ -444,13 +464,22 @@ def list_steps(df, step_type=None):
     if not step_type:
         print('------------- Step list in DataFrame --------------------')
         for step in steps:
-            steptype = df[df['step'] == step].iloc[0]['steptype']
-            stepname = df[df['step'] == step].iloc[0]['name']
-            stepduration = df[df['step'] == step].iloc[-1]['time']
-            print('  * Step n°' + str(step) + ' with name '+ stepname + ' is a ' + steptype + ' / ' + str(stepduration) + ' s')
+            dfnow = df[df['step'] == step]
+            iend = dfnow['time_global'].last_valid_index()
+            steptype = '{:>15}'.format(dfnow.iloc[0]['steptype'])
+            stepname = '{:>40}'.format(dfnow.iloc[0]['name'])
+            if iend is not None:
+                stepduration = '{:>10.2f}'.format(dfnow.loc[iend,'time'])
+                time_global = '{:>10.2f}'.format(dfnow.loc[iend, 'time_global'])
+                print('  * Step n°' + str(step) + ' \t : '+ stepname + '\t is a ' + steptype + ' | Duration : ' + str(stepduration) + ' s | Total time is : ' + str(time_global) + ' s')
+            else:
+                print('  * Step n°' + str(step) + ' \t : '+ stepname + '\t is a ' + steptype + ' | Is a bit mysterious')
         print('---------------------------------------------------------')
-        return 0
+        return None
     else:
+        aliases = {'asweep': 'amplitudesweep', 'ampsweep':'amplitudesweep', 'tsweep':'timesweep', 'fsweep':'freqsweep', 'frequencysweep':'freqsweep'}
+        if step_type in aliases:
+            step_type = aliases[step_type]
         unique_matches =  np.unique(df[df['steptype'].str.lower() == step_type]['step'])
         return list(unique_matches)
 
@@ -513,15 +542,24 @@ def _fit_HB(rate, strs, fit_up_to=1e3, fit_from=1e-3):
 
 ##############################################################################
 ## -------- PLOTTING FUNCTIONS ###############################################
-def _darken(palette, factor=0.6):
+def darken(palette, factor=0.6):
     """
-    Function that darkens a Bokeh palette
+    Function that darkens a Bokeh palette or a single color
     by a given factor
     """
+    isStr = False
+    if type(palette) == str:
+        isStr = True
+        palette = [palette]
+    
     rgb = [[int(c[1:3], 16),int(c[3:5], 16),int(c[5:7], 16)] for c in palette]
     dark_rgb = lambda factor : [[int(c[0]*factor), int(c[1]*factor), int(c[2]*factor)] for c in rgb]
     hexvals = ['#' +'{0:0{1}x}'.format(c[0]*256**2 + c[1]*256 + c[2],6) for c in dark_rgb(factor)]
-    return hexvals
+
+    if isStr:
+        return hexvals[0] # Returns a str if a str was input
+    else:
+        return hexvals # Returns a list if a list was input
  
 def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
     """ 
@@ -535,34 +573,38 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
     - a figure (d'uh !)
     - FIT [Nx4 list] : the fit to your steps, with [step, sigma_Y, K, exponent]
     """   
-    steps = np.unique(df['step'])
-    fits_all = np.zeros((len(steps), 4))
+    if len(df) > 0 and 'step' in df.keys():
+        steps = np.unique(df['step'])
+        fits_all = np.zeros((len(steps), 4))
 
-    # Create and format figure
-    f1 = figure(x_axis_type='log', y_axis_type='log', title='Flow Curve', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-    f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (1/s)', 'τ (Pa)'
-    cmap, cmap_line = magma(np.size(steps)+1), _darken(magma(np.size(steps)+1))
+        # Create and format figure
+        f1 = figure(x_axis_type='log', y_axis_type='log', title='Flow Curve', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
+        f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (1/s)', 'τ (Pa)'
+        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
 
-    for no, step in enumerate(steps):
-        # Check that step makes sense
-        flow_curve = df[df['step'] == step]
-        if flow_curve.iloc[0]['steptype'] != 'Flowcurve':
-            print('plot_flowcurve >  Warning : Cannot confirm that step ' + str(step) + ' is a flow curve.')    
-        ys, K, exponent = _fit_HB(flow_curve['shearrate'], flow_curve['stress'], fit_up_to=fit_up_to, fit_from=fit_from)
-        fits_all[no,:] = [step, ys, K, exponent]
+        for no, step in enumerate(steps):
+            # Check that step makes sense
+            flow_curve = df[df['step'] == step]
+            if flow_curve.iloc[0]['steptype'] != 'Flowcurve':
+                print('plot_flowcurve >  Warning : Cannot confirm that step ' + str(step) + ' is a flow curve.')    
+            ys, K, exponent = _fit_HB(flow_curve['shearrate'], flow_curve['stress'], fit_up_to=fit_up_to, fit_from=fit_from)
+            fits_all[no,:] = [step, ys, K, exponent]
 
-        # Plotting + Display + producing the fitted curve
-        shearrates = flow_curve['shearrate']
-        fitted_stress = ys + K*shearrates**exponent 
-        f1.line(shearrates, fitted_stress, line_color=cmap_line[no])
-        f1.scatter(x='shearrate', y='stress', marker='square', source=flow_curve, line_color=cmap_line[no], fill_color=cmap[no], legend_label="Flow curve, step " + str(step))    
-        print('plot_flowcurve > fit for step '  + str(step) + ' : τ = ' + '{:3.2f}'.format(ys) + ' + '  + '{:3.2f}'.format(K) + ' γ^(' + '{:3.2f}'.format(exponent) + ')')
-    
-    f1.legend.location = 'bottom_right'
-    show(f1)
-    time.sleep(0.5)
+            # Plotting + Display + producing the fitted curve
+            shearrates = flow_curve['shearrate']
+            fitted_stress = ys + K*shearrates**exponent 
+            f1.line(shearrates, fitted_stress, line_color=cmap_line[no])
+            f1.scatter(x='shearrate', y='stress', marker='square', source=flow_curve, line_color=cmap_line[no], fill_color=cmap[no], legend_label="Flow curve, step " + str(step))    
+            print('plot_flowcurve > fit for step '  + str(step) + ' : τ = ' + '{:3.2f}'.format(ys) + ' + '  + '{:3.2f}'.format(K) + ' γ^(' + '{:3.2f}'.format(exponent) + ')')
+        
+        f1.legend.location = 'bottom_right'
+        show(f1)
+        time.sleep(0.5)
 
-    return fits_all, f1
+        return fits_all, f1
+    else:
+        print('plot_flowcurve > No flowcurve step found')
+        return None, None
 
 def plot_normalforce(df):
     """ 
@@ -580,7 +622,7 @@ def plot_normalforce(df):
     # Create and format figure
     f1 = figure(x_axis_type='log', y_axis_type='linear', title='Normal Force', tooltips=[('x','$x'),('y','$y')])
     f1.y_range.start, f1.y_range.end = -1,1
-    cmap, cmap_line = magma(np.size(steps)+1), _darken(magma(np.size(steps)+1))
+    cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
 
     
     for no, step in enumerate(steps):
@@ -612,27 +654,31 @@ def plot_asweep(df, plot_stress=False):
     OUTPUT :
     - a figure (d'uh !)
     """
+    if len(df) > 0 and 'step' in df.keys():
+        steps = np.unique(df['step'])
+        f1 = figure(x_axis_type='log', y_axis_type='log', title='Amplitude Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
+        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
 
-    steps = np.unique(df['step'])
-    f1 = figure(x_axis_type='log', y_axis_type='log', title='Amplitude Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-    cmap, cmap_line = magma(np.size(steps)+1), _darken(magma(np.size(steps)+1))
+        for no, step in enumerate(steps):
+            # Check that step makes sense
+            amp_sweep = df[df['step'] == step]
+            if amp_sweep.iloc[0]['steptype'] != 'Amplitudesweep':
+                print('plot_asweep > Warning : Cannot confirm that step ' + str(step) + ' is an amplitude sweep')
+            f1.scatter(x='strain', y='gprime' , marker='square', line_color=cmap[no], fill_color=cmap_line[no], source=amp_sweep, legend_label="G' , step " + str(step))
+            f1.scatter(x='strain', y='gsecond', marker='o',      line_color=cmap[no], fill_color='lightgray', source=amp_sweep, legend_label="G'' , step " + str(step))
+            if plot_stress: f1.scatter(x='strain', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=amp_sweep, legend_label='σ , step ' + str(step))
+        
+        f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (%)', 'G, σ (Pa)'
+        f1.legend.location = "bottom"
 
-    for no, step in enumerate(steps):
-         # Check that step makes sense
-        amp_sweep = df[df['step'] == step]
-        if amp_sweep.iloc[0]['steptype'] != 'Amplitudesweep':
-            print('plot_asweep > Warning : Cannot confirm that step ' + str(step) + ' is an amplitude sweep')
-        f1.scatter(x='strain', y='gprime' , marker='square', line_color=cmap[no], fill_color=cmap_line[no], source=amp_sweep, legend_label="G' , step " + str(step))
-        f1.scatter(x='strain', y='gsecond', marker='o',      line_color=cmap[no], fill_color='lightgray', source=amp_sweep, legend_label="G'' , step " + str(step))
-        if plot_stress: f1.scatter(x='strain', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=amp_sweep, legend_label='σ , step ' + str(step))
-    
-    f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (%)', 'G, σ (Pa)'
-    f1.legend.location = "bottom"
+        show(f1)
+        time.sleep(0.5)
 
-    show(f1)
-    time.sleep(0.5)
+        return f1
+    else:
+        print('plot_asweep > No amplitude sweep step in the sliced dataset')
+        return None
 
-    return f1
 
 def plot_fsweep(df, plot_stress=False):
     """ 
@@ -645,26 +691,30 @@ def plot_fsweep(df, plot_stress=False):
     OUTPUT :
     - a figure (d'uh !)
     """
-    steps = np.unique(df['step'])
-    f1 = figure(x_axis_type='log', y_axis_type='log', title='Frequency Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-    cmap, cmap_line = magma(np.size(steps)+1), _darken(magma(np.size(steps)+1))
+    if len(df) > 0 and 'step' in df.keys():
+        steps = np.unique(df['step'])
+        f1 = figure(x_axis_type='log', y_axis_type='log', title='Frequency Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
+        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
 
-    for no, step in enumerate(steps): 
-            # Check that step makes sense
-        freq_sweep = df[df['step'] == step]
-        if freq_sweep.iloc[0]['steptype'] != 'Freqsweep':
-            print('plot_fsweep > Cannot confirm that step ' + str(step) + ' is a frequency sweep')
-        f1.scatter(x='freq', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label="G' , step " + str(step))
-        f1.scatter(x='freq', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='lightgray', source=freq_sweep, legend_label="G'' , step " + str(step))
-        if plot_stress: f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label='σ , step ' + str(step))
-        
-    f1.xaxis.axis_label, f1.yaxis.axis_label = 'f (Hz)', 'G, σ (Pa)'
-    f1.legend.location = 'bottom_right'
+        for no, step in enumerate(steps): 
+                # Check that step makes sense
+            freq_sweep = df[df['step'] == step]
+            if freq_sweep.iloc[0]['steptype'] != 'Freqsweep':
+                print('plot_fsweep > Cannot confirm that step ' + str(step) + ' is a frequency sweep')
+            f1.scatter(x='freq', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label="G' , step " + str(step))
+            f1.scatter(x='freq', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='lightgray', source=freq_sweep, legend_label="G'' , step " + str(step))
+            if plot_stress: f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label='σ , step ' + str(step))
+            
+        f1.xaxis.axis_label, f1.yaxis.axis_label = 'f (Hz)', 'G, σ (Pa)'
+        f1.legend.location = 'bottom_right'
 
-    show(f1)
-    time.sleep(0.5)
+        show(f1)
+        time.sleep(0.5)
 
-    return f1
+        return f1
+    else:
+        print('plot_fsweep > No frequency sweep step in the sliced dataset')
+        return None
     
 def plot_tsweep(df, plot_stress=False, x_axis_type='log', y_axis_type='log'):
     """ 
@@ -677,27 +727,32 @@ def plot_tsweep(df, plot_stress=False, x_axis_type='log', y_axis_type='log'):
     OUTPUT :
     - a figure (d'uh !)
     """
+    if len(df) > 0 and 'step' in df.keys():
+        steps = np.unique(df['step'])
+        f1 = figure(y_axis_type=y_axis_type, x_axis_type=x_axis_type, title='Time Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400, y_range=(10,300))
+        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
 
-    steps = np.unique(df['step'])
-    f1 = figure(y_axis_type=y_axis_type, x_axis_type=x_axis_type, title='Time Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-    cmap, cmap_line = magma(np.size(steps)+1), _darken(magma(np.size(steps)+1))
+        for no, step in enumerate(steps): 
+            # Check that step makes sense
+            time_sweep = df[df['step'] == step]
+            if time_sweep.iloc[0]['steptype'] != 'Timesweep':
+                print('plot_tsweep > Cannot confirm that step ' + str(step) + ' is a time sweep')
+            f1.scatter(x='time', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep, legend_label="Step " + str(step))
+            f1.scatter(x='time', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='white', source=time_sweep)
+            if plot_stress: 
+                f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep)
+                f1.xaxis.axis_label, f1.yaxis.axis_label = 't (s)', 'G, σ (Pa)'
+            else:
+                f1.xaxis.axis_label, f1.yaxis.axis_label = 't (s)', 'G'', G" (Pa)'
+    
+        f1.legend.location = "right"
 
-    for no, step in enumerate(steps): 
-        # Check that step makes sense
-        time_sweep = df[df['step'] == step]
-        if time_sweep.iloc[0]['steptype'] != 'Timesweep':
-            print('plot_tsweep > Cannot confirm that step ' + str(step) + ' is a time sweep')
-        f1.scatter(x='time', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep, legend_label="Step " + str(step))
-        f1.scatter(x='time', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='white', source=time_sweep)
-        if plot_stress: f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep)
-        
-    f1.xaxis.axis_label, f1.yaxis.axis_label = 't (s)', 'G, σ (Pa)'
-    f1.y_range.start, f1.y_range.end = 1, 125
-    f1.legend.location = "top_right"
-
-    show(f1)
-    time.sleep(0.5)
-    return f1
+        show(f1)
+        time.sleep(0.5)
+        return f1
+    else:
+        print('plot_tsweep > No time sweep step in the sliced dataset')
+        return None
 
 def plot_startup(df, reversal=False, malvern=True, plot_vs_strain=False):
     """
@@ -715,47 +770,49 @@ def plot_startup(df, reversal=False, malvern=True, plot_vs_strain=False):
     OUTPUT :
     - a figure (d'uh !)
     """
+    if len(df) > 0 and 'step' in df.keys():
+        f1 = figure(title='Preshears', width=500, height=400)
+        steps = np.unique(df['step'])
+        strain_offset = np.zeros(len(steps) + 1)
+        cmap = magma(np.size(steps)+1)
 
-    f1 = figure(title='Preshears', width=500, height=400)
-    steps = np.unique(df['step'])
-    strain_offset = np.zeros(len(steps) + 1)
-    cmap = magma(np.size(steps)+1)
-
-    # Fix things that are messed up first ...
-    if reversal:
-        steps_forward = steps[::2]
-        steps_reverse = steps[1::2]
-        if malvern:
-            df = fix_stress_malvern_reversal(df, steps_reverse)
+        # Fix things that are messed up first ...
+        if reversal:
+            steps_forward = steps[::2]
+            steps_reverse = steps[1::2]
+            if malvern:
+                df = fix_stress_malvern_reversal(df, steps_reverse)
+            else:
+                df = fix_strain_antonpaar(df, steps) # XXX Will Fail with TA ...
         else:
-            df = fix_strain_antonpaar(df, steps)
+            steps_forward = steps
+
+        # Plot things, be careful with strain offsets
+        for no, s in enumerate(steps):
+            time = df[df['step'] == s]['time']
+            strain, stress = df[df['step'] == s]['strain'], df[df['step'] == s]['stress']
+            avgrate = np.mean(df[df['step'] == s]['shearrate'])
+            if s in steps_forward and reversal: # No need for strain offsets if no reversal ...
+                strain_offset[no + 1] = df[df['step'] == s]['strain'].iloc[-1]
+
+            if plot_vs_strain:  
+                f1.line(strain + strain_offset[no], stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
+                    # ' : γ = ' + '{:2.1e}'.format(avgrate) + ' 1/s')
+                
+                f1.xaxis.axis_label, f1.yaxis.axis_label ='gamma (%)', 'sigma (Pa)'
+                strslim, strnlim = np.max(np.abs(df['stress'])), np.max(np.abs(df['strain']))
+                f1.line([0,strnlim], [0,0], line_dash='dotted', line_color='black')
+                f1.line([strnlim/2, strnlim/2], [-strslim,strslim], line_dash='dotted', line_color='black')
+            else:
+                f1.line(time, stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
+                f1.xaxis.axis_label, f1.yaxis.axis_label ='t (s)', 'sigma (Pa)'
+
+        f1.legend.location='bottom_right'
+        show(f1)
+        return f1
     else:
-        steps_forward = steps
-
-    # Plot things, be careful with strain offsets
-    for no, s in enumerate(steps):
-        time = df[df['step'] == s]['time']
-        strain, stress = df[df['step'] == s]['strain'], df[df['step'] == s]['stress']
-        avgrate = np.mean(df[df['step'] == s]['shearrate'])
-        if s in steps_forward and reversal: # No need for strain offsets if no reversal ...
-            strain_offset[no + 1] = df[df['step'] == s]['strain'].iloc[-1]
-
-        if plot_vs_strain:  
-            f1.line(strain + strain_offset[no], stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
-                # ' : γ = ' + '{:2.1e}'.format(avgrate) + ' 1/s')
-            
-            f1.xaxis.axis_label, f1.yaxis.axis_label ='gamma (%)', 'sigma (Pa)'
-            strslim, strnlim = np.max(np.abs(df['stress'])), np.max(np.abs(df['strain']))
-            f1.line([0,strnlim], [0,0], line_dash='dotted', line_color='black')
-            f1.line([strnlim/2, strnlim/2], [-strslim,strslim], line_dash='dotted', line_color='black')
-        else:
-            f1.line(time, stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
-            f1.xaxis.axis_label, f1.yaxis.axis_label ='t (s)', 'sigma (Pa)'
-
-    f1.y_range.start, f1.y_range.end = 0, 125
-    f1.legend.location='bottom_right'
-    show(f1)
-    return f1
+        print('plot_startup > No startup step in the sliced dataset')
+        return None
 
 def plot_control_startup(df, malvern=True, strain_as_x=True):
     """
@@ -811,31 +868,33 @@ def plot_creep(df, x_axis_type='log', y_axis_type='log', plot_shearrate = False)
     OUTPUT :
     - a figure (d'uh !)
     """
-    
-    f1 = figure(title='Creep', x_axis_type=x_axis_type, y_axis_type=y_axis_type)
-    steps = np.unique(df['step'])
-    cmap = magma(np.size(steps)+1)
+    if len(df) > 0 and 'step' in df.keys():
+        f1 = figure(title='Creep', x_axis_type=x_axis_type, y_axis_type=y_axis_type)
+        steps = np.unique(df['step'])
+        cmap = magma(np.size(steps)+1)
 
-    for no, cr in enumerate(steps):
-        strn = df.loc[df['step'] == cr, 'strain']
-        sr   = df.loc[df['step'] == cr, 'shearrate']
-        tm = df.loc[df['step'] == cr, 'time']
-        strs = df.loc[df['step'] == cr, 'stress'].to_numpy().mean()
-        
-        if plot_shearrate:
-            f1.line(tm, sr, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' +  '{:4.2f}'.format(strs)  + ' Pa')
-            f1.yaxis.axis_label = 'gamma^dot (1/s)'
-            f1.legend.location = 'bottom_left'
-        else:
-            f1.line(tm, strn, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' + '{:4.2f}'.format(strs) + ' Pa')
-            f1.line([1e-3,np.max(strn)],[1e-3,np.max(strn)], line_dash='dotted', line_color='black')
-            f1.yaxis.axis_label = 'gamma (%)'
-            f1.legend.location = 'top_left'
+        for no, cr in enumerate(steps):
+            strn = df.loc[df['step'] == cr, 'strain']
+            sr   = df.loc[df['step'] == cr, 'shearrate']
+            tm = df.loc[df['step'] == cr, 'time']
+            strs = df.loc[df['step'] == cr, 'stress'].to_numpy().mean()
+            
+            if plot_shearrate:
+                f1.line(tm, sr, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' +  '{:4.2f}'.format(strs)  + ' Pa')
+                f1.yaxis.axis_label = 'gamma^dot (1/s)'
+                f1.legend.location = 'bottom_left'
+            else:
+                f1.line(tm, strn, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' + '{:4.2f}'.format(strs) + ' Pa')
+                f1.line([1e-3,np.max(strn)],[1e-3,np.max(strn)], line_dash='dotted', line_color='black')
+                f1.yaxis.axis_label = 'gamma (%)'
+                f1.legend.location = 'top_left'
 
-
-    f1.xaxis.axis_label = 'time (s)'
-    show(f1)
-    return f1
+        f1.xaxis.axis_label = 'time (s)'
+        show(f1)
+        return f1
+    else:
+        print('plot_startup > No startup step in the sliced dataset')
+        return None
 
     
 def plot_stepstrain(df, x_axis_type='log', y_axis_type='log', plot_strain=True):
@@ -851,46 +910,49 @@ def plot_stepstrain(df, x_axis_type='log', y_axis_type='log', plot_strain=True):
     OUTPUT :
     - a figure (d'uh !)
     """
-    
-    f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=350)
-    f2 = figure(title='Step Strain : Strain', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=200)
-    steps = np.unique(df['step'])
-    cmap = magma(np.size(steps))
-    cmap_d = _darken(magma(np.size(steps)), factor=0.8)
+    if len(df) > 0 and 'step' in df.keys():
+        f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=350)
+        f2 = figure(title='Step Strain : Strain', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=200)
+        steps = np.unique(df['step'])
+        cmap = magma(np.size(steps))
+        cmap_d = darken(magma(np.size(steps)), factor=0.8)
 
-    for no, cr in enumerate(steps):
-        strn_t = df.loc[df['step'] == cr, 'strain']
-        strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
-        tm = df.loc[df['step'] == cr, 'time']
-        strs = df.loc[df['step'] == cr, 'stress']
-        
+        for no, cr in enumerate(steps):
+            strn_t = df.loc[df['step'] == cr, 'strain']
+            strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
+            tm = df.loc[df['step'] == cr, 'time']
+            strs = df.loc[df['step'] == cr, 'stress']
+            
+            if plot_strain:
+                f1.line(tm, strs, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
+                f2.line(tm, strn_t, line_color=cmap_d[no], line_width=1.5)
+                f2.line([1e-3,np.max(tm)],[strn, strn], line_dash='dotted', line_color='black')
+            else:
+                f1.line(tm, strs, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', γ = ' +  '{:4.2f}'.format(strn))
+
+        f2.x_range.start, f2.y_range.start=0.01, 0
+        f1.x_range.start, f1.y_range.start=0.01, -0.1      
+        f1.y_range.end = 10
+        f1.legend.location = 'bottom_left'
+
         if plot_strain:
-            f1.line(tm, strs, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
-            f2.line(tm, strn_t, line_color=cmap_d[no], line_width=1.5)
-            f2.line([1e-3,np.max(tm)],[strn, strn], line_dash='dotted', line_color='black')
+            f1.yaxis.axis_label = 'σ (Pa)'
+            f1.xaxis.axis_label = 't  (s)'
+            f1.legend.location = 'top_right'
+            f2.yaxis.axis_label = 'γ (1)'
+            f2.xaxis.axis_label = 't (s)'
+            show(column(f1,f2))
         else:
-            f1.line(tm, strs, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', γ = ' +  '{:4.2f}'.format(strn))
+            f1.legend.location = 'top_right'   
+            f1.yaxis.axis_label = 'σ (Pa)'
+            f1.xaxis.axis_label = 't (s)'
+            show(f1)
 
-    f2.x_range.start, f2.y_range.start=0.01, 0
-    f1.x_range.start, f1.y_range.start=0.01, -0.1      
-    f1.y_range.end = 10
-    f1.legend.location = 'bottom_left'
 
-    if plot_strain:
-        f1.yaxis.axis_label = 'σ (Pa)'
-        f1.xaxis.axis_label = 't  (s)'
-        f1.legend.location = 'top_right'
-        f2.yaxis.axis_label = 'γ (1)'
-        f2.xaxis.axis_label = 't (s)'
-        show(column(f1,f2))
+        return (f1, f2)
     else:
-        f1.legend.location = 'top_right'   
-        f1.yaxis.axis_label = 'σ (Pa)'
-        f1.xaxis.axis_label = 't (s)'
-        show(f1)
-
-
-    return (f1, f2)
+        print('plot_stepstrain > No step strain "step" in the sliced dataset')
+        return None, None
 
     
 def plot_stepstrain_normalised(df, x_axis_type='log', y_axis_type='log'):
@@ -906,26 +968,30 @@ def plot_stepstrain_normalised(df, x_axis_type='log', y_axis_type='log'):
     OUTPUT :
     - a figure (d'uh !)
     """
-    
-    f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=600, height=500)
-    steps = np.unique(df['step'])
-    cmap = magma(np.size(steps))
-    cmap_d = _darken(magma(np.size(steps)), factor=0.8)
 
-    for no, cr in enumerate(steps):
-        strn_t = df.loc[df['step'] == cr, 'strain']
-        strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
-        tm = df.loc[df['step'] == cr, 'time']
-        strs = df.loc[df['step'] == cr, 'stress']
-        strs0 = np.mean(strs[(tm < 1) & (tm > 0.5)])
-        f1.line(tm, strs/strs0, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
-       
-    f1.x_range.start, f1.y_range.start = 1, -0.1      
-    f1.y_range.end, f1.y_range.start = 1, 0.009
-    f1.legend.location = 'bottom_left'   
-    f1.yaxis.axis_label = 'σ / σ_0 '
-    f1.xaxis.axis_label = 't (s)'
-    show(f1)
+    if len(df) > 0 and 'step' in df.keys():
+   
+        f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=600, height=500)
+        steps = np.unique(df['step'])
+        cmap = magma(np.size(steps))
+        cmap_d = darken(magma(np.size(steps)), factor=0.8)
 
+        for no, cr in enumerate(steps):
+            strn_t = df.loc[df['step'] == cr, 'strain']
+            strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
+            tm = df.loc[df['step'] == cr, 'time']
+            strs = df.loc[df['step'] == cr, 'stress']
+            strs0 = np.mean(strs[(tm < 1) & (tm > 0.5)])
+            f1.line(tm, strs/strs0, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
+        
+        f1.x_range.start, f1.y_range.start = 1, -0.1      
+        f1.y_range.end, f1.y_range.start = 1, 0.009
+        f1.legend.location = 'bottom_left'   
+        f1.yaxis.axis_label = 'σ / σ_0 '
+        f1.xaxis.axis_label = 't (s)'
+        show(f1)
 
-    return (f1)
+        return (f1)
+    else:
+        print('plot_stepstrain_normalised > No step strain "step" in the sliced dataset')
+        return None, None
