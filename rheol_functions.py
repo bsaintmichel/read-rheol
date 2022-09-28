@@ -1,6 +1,4 @@
 import io
-from re import S
-from tkinter import E
 import numpy as np
 import pandas as pd
 from scipy.integrate import cumtrapz
@@ -103,18 +101,15 @@ def _format_TA(all_data, step_names, constants):
 
             # Strain (REALLY ?!)
             no_Strain = 'Strain' not in all_data[step].columns and 'Oscillation strain' not in all_data[step].columns
-
-
             if no_Strain and 'Displacement' in all_data[step].columns:
-                all_data[step]['Strain'] = (all_data[step]['Displacement'] - all_data[step]['Displacement'].iloc[0])*constants[1]
-
+                all_data[step]['Strain'] = (all_data[step]['Displacement'] - all_data[step]['Displacement'].iloc[0])*constants[1]*100
             elif no_Strain and 'Shear rate' in all_data[step].columns:
-                all_data[step]['Strain'] = np.insert(cumtrapz(x=all_data[step]['Step time'], y=all_data[step]['Shear rate']), 0, 0)
+                all_data[step]['Strain'] = np.insert(cumtrapz(x=all_data[step]['Step time'], y=all_data[step]['Shear rate']), 0, 0)*100
             elif no_Strain:
                 print('>> format_TA : Could not infer strain from data at step n°' + str(step))
                 all_data[step]['Strain'] = np.nan
             else:
-                all_data[step]['Strain'] = all_data[step]['Strain'] - all_data[step]['Strain'].iloc[0]
+                all_data[step]['Strain'] = (all_data[step]['Strain'] - all_data[step]['Strain'].iloc[0])*100
 
         # Final tweaks
         all_data = pd.concat(all_data)
