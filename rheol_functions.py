@@ -380,15 +380,15 @@ def assign_steps(df): # Works for both Malvern and Anton Paar (normally)
 
             if st_avg < 1e-2: # No stress --> Rest step
                 step_type = 'Rest'
-            elif sr_min > 200: # High Strain rate, does not change too much : Preshear
+            elif sr_avg > 200 and sr_min > 50: # High Strain rate, does not change too much : Preshear
                 step_type = 'Preshear'
             elif sr_max > 10 and sr_min < 1 and (st_max - st_min) / st_min > 3: # Wide amplitude in shear rates and stress: probable flow curve
                 step_type = 'Flowcurve'
-            elif sr_avg > 1e-3 and sr_max - sr_min < 0.25*(sr_max): # OK now I am getting increasingly clueless ... probable shear startup (but unsure)
+            elif sr_avg > 1e-3 and sr_max - sr_min < 0.35*(sr_max): # OK now I am getting increasingly clueless ... probable shear startup (but unsure)
                 step_type = 'Shearstartup'
-            elif st_avg > 1e-2 and st_max - st_min < 0.05*(st_min): # Nonzero stress, kept constant (for a stress controlled rheometer): Creep
+            elif st_avg > 1e-2 and st_max - st_min < 0.10*(st_min): # Nonzero stress, kept constant (for a stress controlled rheometer): Creep
                 step_type = 'Creep'
-            elif step_stn > 3e-2 and std_stn < 1e-3  : # Well .. then I don't know.
+            elif step_stn > 0.1 and std_stn < 1e-2  : # Well .. then I don't know.
                 step_type = 'Stepstrain'
             else:
                 step_type = 'Unknown'
