@@ -1,6 +1,6 @@
-# ReadRheology.ipynb
+# ReadRheology
 
-A free adaptation of former scripts I had on MATLAB ...
+A free adaptation of former scripts I had on MATLAB. This prgram reads rheology files (.csv from Malvern rSpace, .csv from Anton Paar Rheocompass and .txt from TA Trios) and converts them into a nice Pandas DataFrame array. The program also provides a slicing (i.e. selecting a sub-part of the DataFrame) and several basic plotting routines for prototypical tests (e.g. flow curves, shear startup, creep, oscillatory with amplitude sweep or frequency sweep). The only modelling done here is the extraction of Herschel-Bulkley parameters from flow curve data. If you need to go further, seek [Rheos](https://github.com/JuliaRheology) (I know, it is written in Julia, but you will figure it out).
 
 Brice Saint-Michel, Laboratoire Navier (`bsaintmichel`, still around by googlemail.com)
 
