@@ -235,6 +235,10 @@ def _malvern_laos(df):
     is_raw = np.isnan(df['stress'])
     df.loc[is_raw, 'raw'] = True
 
+    if np.all(df['raw'] == False):
+        print('_malvern_laos > No LAOS data found')
+        return df
+
     # Drop data points corresponding to less
     # than an oscillation cycle in non-raw data mode
     df['keep'] = True
@@ -267,8 +271,10 @@ def _malvern_laos(df):
         df.loc[condition, 'point'] = np.arange(npts)
 
     # Propagate some info to RAW data points ... 
+    print(df.head(10))
     grouper = df.groupby('step')
     df = grouper.apply(lambda x : x.sort_values('time')).droplevel(0).reset_index(drop=True)
+    print(df.head(10))
 
     row_to_propagate = df.iloc[0]
     for idx, row in df.iterrows():
@@ -465,7 +471,8 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
         for no, step in enumerate(steps):
             # Check that step makes sense
             flow_curve = df[df['step'] == step]
-            if flow_curve.iloc[0]['steptype'] != 'Flowcurve':
+            steptype = flow_curve.iloc[0]['type'].lower()
+            if steptype not in ('flowcurve', 'flow curve'):
                 print('plot_flowcurve >  Warning : Cannot confirm that step ' + str(step) + ' is a flow curve.')    
             ys, K, exponent = _fit_HB(flow_curve['shearrate'], flow_curve['stress'], fit_up_to=fit_up_to, fit_from=fit_from)
             fits_all[no,:] = [step, ys, K, exponent]
@@ -505,7 +512,8 @@ def plot_asweep(df, plot_stress=False):
         for no, step in enumerate(steps):
             # Check that step makes sense
             amp_sweep = df[df['step'] == step]
-            if amp_sweep.iloc[0]['steptype'] != 'Amplitudesweep':
+            steptype = amp_sweep.iloc[0]['type'].lower()
+            if steptype not in('amplitudesweep', 'asweep', 'amplitude sweep', 'amp sweep', 'a sweep'):
                 print('plot_asweep > Warning : Cannot confirm that step ' + str(step) + ' is an amplitude sweep')
             f1.scatter(x='strain', y='gprime' , marker='square', line_color=cmap[no], fill_color=cmap_line[no], source=amp_sweep, legend_label="G' , step " + str(step))
             f1.scatter(x='strain', y='gsecond', marker='o',      line_color=cmap[no], fill_color='lightgray', source=amp_sweep, legend_label="G'' , step " + str(step))
@@ -542,7 +550,8 @@ def plot_fsweep(df, plot_stress=False):
         for no, step in enumerate(steps): 
                 # Check that step makes sense
             freq_sweep = df[df['step'] == step]
-            if freq_sweep.iloc[0]['steptype'] != 'Freqsweep':
+            steptype = freq_sweep.iloc[0]['type'].lower()
+            if steptype not in ('freqsweep', 'freq sweep', 'f sweep', 'fsweep'):
                 print('plot_fsweep > Cannot confirm that step ' + str(step) + ' is a frequency sweep')
             f1.scatter(x='freq', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label="G' , step " + str(step))
             f1.scatter(x='freq', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='lightgray', source=freq_sweep, legend_label="G'' , step " + str(step))
@@ -578,7 +587,8 @@ def plot_tsweep(df, plot_stress=False, x_axis_type='log', y_axis_type='log'):
         for no, step in enumerate(steps): 
             # Check that step makes sense
             time_sweep = df[df['step'] == step]
-            if time_sweep.iloc[0]['steptype'] != 'Timesweep':
+            steptype = time_sweep.iloc[0]['type'].lower()
+            if steptype not in ('timesweep', 't sweep', 'time sweep'):
                 print('plot_tsweep > Cannot confirm that step ' + str(step) + ' is a time sweep')
             f1.scatter(x='time', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep, legend_label="Step " + str(step))
             f1.scatter(x='time', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='white', source=time_sweep)
@@ -927,7 +937,7 @@ def build_fourier(proj, time, nmodes=10):
 #         # Check that step makes sense
 #         df_now = df[df['step'] == step]
     
-#         if df_now.iloc[0]['steptype'] == 'Flowcurve':
+#         if df_now.iloc[0]['type'] == 'Flowcurve':
 #             print('plot_normalforce > Step ' + str(step) + ' is a flow curve. Plotting N = f(gamma_dot)')
 #             f1.scatter(df_now['shearrate'], df_now['normalforce'], line_color=cmap_line[no], fill_color=cmap[no], marker='o', legend_label='Step ' + str(step))    
 #             f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ^dot (1/s)', 'F_N (N)'
@@ -1043,7 +1053,7 @@ def build_fourier(proj, time, nmodes=10):
 #         # Final tweaks
 #         all_data = pd.concat(all_data)
 #         all_data = all_data.rename(columns=ta_mapper)
-#         all_data['steptype'] = ''
+#         all_data['type'] = ''
 #         all_data['status'] = ''
         
 #         return all_data
