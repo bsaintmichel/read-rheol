@@ -13,9 +13,9 @@ Un exemple d'utilisation du programme se trouve dans le fichier [ReadRheology.ip
 
 Le fichier appelle des fonctions du fichier Python `rheol_functions.py` pour fonctionner, notamment : 
  
-* le code principal qui lit les fichiers `.csv` : `read_rheology()`. Le programme détecte les fichiers Malvern ou Anton Paar, découpe proprement les étapes (step / interval), gère (normalement) les données de LAOS et renvoie un tableau (Pandas Dataframe). Il renomme les colonnes courantes (contrainte, déformation, etc.) en des identifiants simples (`stress`, `strain`, ...)
+* le code principal qui lit les fichiers `.csv` : `read_rheology()`. Le programme détecte les fichiers Malvern ou Anton Paar, découpe proprement les étapes (step / interval), gère (normalement) les données de LAOS et renvoie un tableau (Pandas Dataframe). Il renomme les colonnes courantes (contrainte, déformation, etc.) en des identifiants simples (`stress`, `strain`, ...), et conservera les noms plus compliqués des colonnes qu'il ne reconnaît pas automatiquement.
 * une fonction de 'confort' :  `slice` permettant de renvoyer un sous-tableau contenant les étapes qui vous intéressent.
-* une autre fonction de confort :  `assign_steps`, permettant de définir un 'type' pour chaque étape, qui pourra être reconnu plus tard par les fonctions de tracé.
+* une autre fonction de confort :  `assign_steps`, permettant de définir un 'type' pour chaque étape, qui pourra être reconnu plus tard par les fonctions de tracé et les fonctions de confort
 * des fonctions de tracé :  `plot_flowcurve()`, `plot_fsweep()`, `plot_asweep()`, `plot_tsweep()` qui permettent de tracer correctement vos courbes d'écoulement, balayages en amplitude et en fréquence, etc. Il est bien sûr possible de superposer ces tracés si vous leur donnez à manger un tableau contenant plusieurs étapes.
 
 --------

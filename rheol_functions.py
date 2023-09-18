@@ -131,6 +131,9 @@ def _format_antonpaar(df):
     # Fix global time issues ...
     df = _fix_globaltime_antonpaar(df)
 
+    # Convert strain to 1 instead of %
+    df['strain'] = df['strain']/100
+
     # Drop unnecessary columns
     df = df.drop(columns=['Interval données:', 'Data interval:'], errors='ignore')
 
@@ -216,6 +219,9 @@ def _format_malvern(df):
     df = df.rename(columns=malvern_mapper)
     df = df.drop(columns=['Complex shear strain(%)', 'Complex shear stress(Pa)'])
 
+    # Adjust strain to be in 1 instead of %
+    df['strain'] = df['strain']/100
+
     # Manage LAOS
     df = _malvern_laos(df)
 
@@ -234,34 +240,46 @@ def _malvern_laos(df):
     # First identify raw LAOS data
     is_raw = np.isnan(df['stress'])
     df.loc[is_raw, 'raw'] = True
+    not_raw = df['raw'] == False
 
     if np.all(df['raw'] == False):
         print('_malvern_laos > No LAOS data found')
         return df
 
+    # Find stress / strain ratio, use it to define raw_oscstrain and raw_oscstress
+    syn_laos = df[~df['raw']]
+    strn_ratio = np.mean(syn_laos['strain']/syn_laos['angle'])
+    strs_ratio = np.mean(syn_laos['stress']/syn_laos['torque'])
+    df['raw_oscstrain'] = df['angle']*strn_ratio
+    df['raw_oscstress'] = df['torque']*strs_ratio
+    df.loc[not_raw, 'raw_oscstress'] = np.nan
+    df.loc[not_raw, 'raw_oscstrain'] = np.nan
+
+    print(f'_malvern_laos > Stress ratio {strs_ratio:.2e} (Nm/Pa), strain ratio {strn_ratio:.2e} (1/rad)')
+
     # Drop data points corresponding to less
     # than an oscillation cycle in non-raw data mode
-    df['keep'] = True
-    df['tnormed'] = df['time']*df['freq']
-    for step in steps:
-        condition = (df['step'] == step) & (df['raw'] == False) & any(np.isfinite(df['freq']))
-        is_osc_step = np.any(np.isfinite(df.loc[condition, 'freq']))
-        if is_osc_step:
-            tvals = np.array(df.loc[condition, 'tnormed'])
-            keep = np.zeros_like(tvals)
-            tref = tvals[0]
-            for no, tval in enumerate(tvals):
-                if tval > tref + 1:
-                    tref = tval
-                    keep[no] = True
-                else:
-                    keep[no] = False
-            keep[0] = True
-            df.loc[condition, 'keep'] = keep.astype(bool)
-    bin = df[~df['keep']]
-    if len(bin) > 0:
-        print('_malvern_laos > Deleting data from oscillatory steps corresponding to less than one cycle ...')
-        df = df.drop(index=bin.index)
+    # df['keep'] = True
+    # df['tnormed'] = df['time']*df['freq']
+    # for step in steps:
+    #     condition = (df['step'] == step) & (df['raw'] == False) & any(np.isfinite(df['freq']))
+    #     is_osc_step = np.any(np.isfinite(df.loc[condition, 'freq']))
+    #     if is_osc_step:
+    #         tvals = np.array(df.loc[condition, 'tnormed'])
+    #         keep = np.zeros_like(tvals)
+    #         tref = tvals[0]
+    #         for no, tval in enumerate(tvals):
+    #             if tval > tref + 1:
+    #                 tref = tval
+    #                 keep[no] = True
+    #             else:
+    #                 keep[no] = False
+    #         keep[0] = True
+    #         df.loc[condition, 'keep'] = keep.astype(bool)
+    # bin = df[~df['keep']]
+    # if len(bin) > 0:
+    #     print('_malvern_laos > Deleting data from oscillatory steps corresponding to less than one cycle ...')
+    #     df = df.drop(index=bin.index)
     
     # Create indices for non-raw values
     df['point'] = np.nan
@@ -271,20 +289,22 @@ def _malvern_laos(df):
         df.loc[condition, 'point'] = np.arange(npts)
 
     # Propagate some info to RAW data points ... 
-    print(df.head(10))
     grouper = df.groupby('step')
     df = grouper.apply(lambda x : x.sort_values('time')).droplevel(0).reset_index(drop=True)
-    print(df.head(10))
 
+    df = df[::-1]
     row_to_propagate = df.iloc[0]
     for idx, row in df.iterrows():
         if not row['raw']:
             row_to_propagate = row
+            freq = np.squeeze(row['freq'])
         else:
             df.loc[idx, 'point'] = row_to_propagate['point']
-            df.loc[idx, 'freq']  = row_to_propagate['freq']
-            
-    return df.drop(columns=['keep', 'tnormed'])
+            df.loc[idx, 'stress'] = row_to_propagate['stress']
+            df.loc[idx, 'strain'] = row_to_propagate['strain']
+            df.loc[idx, 'freq'] = freq
+
+    return df[::-1]
 
 ###############################################################################################
 ## GENERAL FUNCTIONS -------------------------------------------------------------------------
@@ -380,23 +400,30 @@ def slice(df, steps):
 
     ARGS : 
     - df [PANDAS.DATAFRAME] : your rheology data
-    - steps [LIST] or [INT] : your steps of interest
+    - steps [LIST] or [INT] or [ST] : your steps of interest, defined by a list of step n°s, a single step n° or
+    a step type
 
     OUTPUT :
     - sliced_df [PANDAS.DATAFRAME] : a (smaller) set of your rheology data containing
     what you want
     """
     
+    # If steps is int or list, consider it is a list of indices
+    # If step is str, consider we are slicing on the types
     if type(steps) == int:
-        steps = [steps]
+        key = 'step'
+        vals = [steps]
+    elif type(steps) == str:
+        key = 'type'    
+        vals = [steps]
+    elif hasattr(steps, '__iter__'):
+        key = 'step'
+        vals = steps
 
-    if type(steps) != list and not isinstance(steps, np.ndarray):
-        print(f'slice > Did not manage to understand {steps}')
-    else:
-        sliced_df = pd.DataFrame()
-        for step in steps:
-            sliced_df = pd.concat((sliced_df, df[df['step'] == step]))
-    
+    sliced_df = pd.DataFrame()
+    for val in vals:
+        sliced_df = pd.concat((sliced_df, df[df[key] == val]))
+
     if sliced_df.empty:
         print(f'slice > Warning : empty dataframe with slicing steps {steps}')
     return sliced_df
@@ -644,7 +671,6 @@ def proj_fourier(time, signal, nmodes=10):
     dt = np.mean(np.diff(time)) # We need it to estimate how many periods we have
     time = np.append(time, (time[-1] + dt))
     signal = np.append(signal, signal[0])
-
 
     for mno in range(nmodes):
         proj['cos'][mno] = np.trapz(signal*np.cos(mno*time), x=time)*2/np.nanmax(time)
