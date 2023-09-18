@@ -34,11 +34,8 @@ import pandas as pd
 from scipy.integrate import cumtrapz
 from scipy import stats
 
-from bokeh.plotting import figure, row, show, column
-from bokeh.models import ColumnDataSource, LogColorMapper
-from bokeh.transform import log_cmap
-from bokeh.io import output_notebook
-from bokeh.palettes import magma
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 import time
 
@@ -491,12 +488,18 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
         fits_all = np.zeros((len(steps), 4))
 
         # Create and format figure
-        f1 = figure(x_axis_type='log', y_axis_type='log', title='Flow Curve', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-        f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (1/s)', 'τ (Pa)'
-        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
+        fig, ax = plt.subplots()
+        ax.set_xlabel('γ (1/s)'), ax.set_ylabel('τ (Pa)')
+        ax.set_title('Flow Curve')
+        cmap = cm.magma
 
         for no, step in enumerate(steps):
             # Check that step makes sense
+            if len(steps) > 1:
+                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+            else:
+                color = np.array([0,0,0,1])
+
             flow_curve = df[df['step'] == step]
             steptype = flow_curve.iloc[0]['type'].lower()
             if steptype not in ('flowcurve', 'flow curve'):
@@ -507,15 +510,16 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
             # Plotting + Display + producing the fitted curve
             shearrates = flow_curve['shearrate']
             fitted_stress = ys + K*shearrates**exponent 
-            f1.line(shearrates, fitted_stress, line_color=cmap_line[no])
-            f1.scatter(x='shearrate', y='stress', marker='square', source=flow_curve, line_color=cmap_line[no], fill_color=cmap[no], legend_label="Flow curve, step " + str(step))    
-            print('plot_flowcurve > fit for step '  + str(step) + ' : τ = ' + '{:3.2f}'.format(ys) + ' + '  + '{:3.2f}'.format(K) + ' γ^(' + '{:3.2f}'.format(exponent) + ')')
+            ax.loglog(shearrates, fitted_stress, color=0.8*color)
+            ax.loglog(shearrates,flow_curve['stress'], marker='s', color=0.8*color, 
+                      markersize=3,markerfacecolor=color, label="Flow curve, step " + str(step))
+            fig.legend()    
+            print(f'plot_flowcurve > fit for step {step} : {ys:.2f} + {K:.2f} γ^({exponent:.2f})')
         
-        f1.legend.location = 'bottom_right'
-        show(f1)
+        plt.show()
         time.sleep(0.5)
 
-        return fits_all, f1
+        return fits_all
     else:
         print('plot_flowcurve > No flowcurve step found')
         return None, None
@@ -532,27 +536,36 @@ def plot_asweep(df, plot_stress=False):
     - a figure (d'uh !)
     """
     if len(df) > 0 and 'step' in df.keys():
+        # Create and format figure
+        fig, ax = plt.subplots()
+        ax.set_xlabel('γ (1)'), ax.set_ylabel("G', G'' (Pa)")
+        ax.set_title('Amplitude Sweep')
+        cmap = cm.magma
         steps = np.unique(df['step'])
-        f1 = figure(x_axis_type='log', y_axis_type='log', title='Amplitude Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
-
+        
         for no, step in enumerate(steps):
             # Check that step makes sense
+            if len(steps) > 1:
+                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+            else:
+                color = np.array([0,0,0,1])
             amp_sweep = df[df['step'] == step]
             steptype = amp_sweep.iloc[0]['type'].lower()
+
             if steptype not in('amplitudesweep', 'asweep', 'amplitude sweep', 'amp sweep', 'a sweep'):
                 print('plot_asweep > Warning : Cannot confirm that step ' + str(step) + ' is an amplitude sweep')
-            f1.scatter(x='strain', y='gprime' , marker='square', line_color=cmap[no], fill_color=cmap_line[no], source=amp_sweep, legend_label="G' , step " + str(step))
-            f1.scatter(x='strain', y='gsecond', marker='o',      line_color=cmap[no], fill_color='lightgray', source=amp_sweep, legend_label="G'' , step " + str(step))
-            if plot_stress: f1.scatter(x='strain', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=amp_sweep, legend_label='σ , step ' + str(step))
+            ax.loglog(amp_sweep['strain'], amp_sweep['gprime'] , markersize=3, marker='s', color=0.8*color, 
+                      markerfacecolor=color, label="G' , step " + str(step))
+            ax.loglog(amp_sweep['strain'], amp_sweep['gsecond'], markersize=3, marker='o', color=0.8*color, 
+                      markerfacecolor='lightgray', label="G'' , step " + str(step))
+            if plot_stress: ax.loglog(amp_sweep['strain'], amp_sweep['stress'], markersize=3, marker='^', color=color[no], 
+                                      markerfacecolor=cmap[no], label='σ , step ' + str(step))
         
-        f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (%)', 'G, σ (Pa)'
-        f1.legend.location = "bottom"
-
-        show(f1)
+        fig.legend()    
         time.sleep(0.5)
+        plt.show()
 
-        return f1
+        return 0
     else:
         print('plot_asweep > No amplitude sweep step in the sliced dataset')
         return None
@@ -570,32 +583,40 @@ def plot_fsweep(df, plot_stress=False):
     - a figure (d'uh !)
     """
     if len(df) > 0 and 'step' in df.keys():
+        # Create and format figure
+        fig, ax = plt.subplots()
+        ax.set_xlabel('f (Hz)'), ax.set_ylabel("G', G'' (Pa)")
+        ax.set_title('Frequency Sweep')
+        cmap = cm.magma
         steps = np.unique(df['step'])
-        f1 = figure(x_axis_type='log', y_axis_type='log', title='Frequency Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400)
-        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
+        
+        for no, step in enumerate(steps):
+            # Check that step makes sense
+            if len(steps) > 1:
+                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+            else:
+                color = np.array([0,0,0,1])
+            f_sweep = df[df['step'] == step]
+            steptype = f_sweep.iloc[0]['type'].lower()
 
-        for no, step in enumerate(steps): 
-                # Check that step makes sense
-            freq_sweep = df[df['step'] == step]
-            steptype = freq_sweep.iloc[0]['type'].lower()
-            if steptype not in ('freqsweep', 'freq sweep', 'f sweep', 'fsweep'):
-                print('plot_fsweep > Cannot confirm that step ' + str(step) + ' is a frequency sweep')
-            f1.scatter(x='freq', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label="G' , step " + str(step))
-            f1.scatter(x='freq', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='lightgray', source=freq_sweep, legend_label="G'' , step " + str(step))
-            if plot_stress: f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=freq_sweep, legend_label='σ , step ' + str(step))
-            
-        f1.xaxis.axis_label, f1.yaxis.axis_label = 'f (Hz)', 'G, σ (Pa)'
-        f1.legend.location = 'bottom_right'
-
-        show(f1)
+            if steptype not in('freqsweep', 'fsweep', 'frequency sweep', 'freq sweep', 'f sweep'):
+                print('plot_fsweep > Warning : Cannot confirm that step ' + str(step) + ' is a frequency sweep')
+            ax.loglog(f_sweep['freq'], f_sweep['gprime'], markersize=3, marker='s', color=0.8*color, 
+                      markerfacecolor=color, label="G' , step " + str(step))
+            ax.loglog(f_sweep['freq'], f_sweep['gsecond'], markersize=3, marker='o', color=0.8*color, 
+                      markerfacecolor='lightgray', label="G'' , step " + str(step))
+            if plot_stress: ax.loglog(f_sweep['freq'], f_sweep['stress'], marker='^', color=color[no], 
+                                      markerfacecolor=cmap[no], markersize=3, label='σ , step ' + str(step))
+        
+        fig.legend()    
         time.sleep(0.5)
-
-        return f1
+        plt.show()
+        return 0
     else:
         print('plot_fsweep > No frequency sweep step in the sliced dataset')
         return None
     
-def plot_tsweep(df, plot_stress=False, x_axis_type='log', y_axis_type='log'):
+def plot_tsweep(df, plot_stress=False):
     """ 
     Function to plot time sweeps
 
@@ -607,31 +628,37 @@ def plot_tsweep(df, plot_stress=False, x_axis_type='log', y_axis_type='log'):
     - a figure (d'uh !)
     """
     if len(df) > 0 and 'step' in df.keys():
+        # Create and format figure
+        fig, ax = plt.subplots()
+        ax.set_xlabel('t (s)'), ax.set_ylabel("G', G'' (Pa)")
+        ax.set_title('Time Sweep')
+        cmap = cm.magma
         steps = np.unique(df['step'])
-        f1 = figure(y_axis_type=y_axis_type, x_axis_type=x_axis_type, title='Time Sweep', tooltips=[('x','$x'),('y','$y')], width=500, height=400, y_range=(10,300))
-        cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
-
-        for no, step in enumerate(steps): 
+        
+        for no, step in enumerate(steps):
             # Check that step makes sense
-            time_sweep = df[df['step'] == step]
-            steptype = time_sweep.iloc[0]['type'].lower()
-            if steptype not in ('timesweep', 't sweep', 'time sweep'):
-                print('plot_tsweep > Cannot confirm that step ' + str(step) + ' is a time sweep')
-            f1.scatter(x='time', y='gprime' , marker='square', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep, legend_label="Step " + str(step))
-            f1.scatter(x='time', y='gsecond', marker='o',      line_color=cmap_line[no], fill_color='white', source=time_sweep)
-            if plot_stress: 
-                f1.scatter(x='frequency', y='stress', marker='triangle', line_color=cmap_line[no], fill_color=cmap[no], source=time_sweep)
-                f1.xaxis.axis_label, f1.yaxis.axis_label = 't (s)', 'G, σ (Pa)'
+            if len(steps) > 1:
+                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
             else:
-                f1.xaxis.axis_label, f1.yaxis.axis_label = 't (s)', 'G'', G" (Pa)'
-    
-        f1.legend.location = "right"
+                color = np.array([0,0,0,1])
+            t_sweep = df[df['step'] == step]
+            steptype = t_sweep.iloc[0]['type'].lower()
 
-        show(f1)
+            if steptype not in('timesweep', 'tsweep', 'time sweep', 't sweep'):
+                print('plot_tsweep > Warning : Cannot confirm that step ' + str(step) + ' is a frequency sweep')
+            ax.loglog(t_sweep['time'], t_sweep['gprime'], markersize=3, marker='s', color=0.8*color, 
+                      markerfacecolor=color, label="G' , step " + str(step))
+            ax.loglog(t_sweep['time'], t_sweep['gsecond'], marker='o', color=0.8*color, 
+                      markerfacecolor='lightgray', markersize=3, label="G'' , step " + str(step))
+            if plot_stress: ax.loglog(t_sweep['time'], t_sweep['stress'], marker='^', color=color[no], 
+                                      markerfacecolor=cmap[no], markersize=3, label='σ , step ' + str(step))
+        
+        fig.legend()    
         time.sleep(0.5)
-        return f1
+        plt.show()
+        return 0
     else:
-        print('plot_tsweep > No time sweep step in the sliced dataset')
+        print('plot_fsweep > No time sweep step in the sliced dataset')
         return None
 
 ### Fourier projection and reconstruction
