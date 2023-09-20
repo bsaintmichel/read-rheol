@@ -40,6 +40,145 @@ import matplotlib.cm as cm
 import time
 
 
+
+##############################################################################################
+## TA FUNCTIONS --------------------------------------------------------------
+ta_mapper = {'Step time' : 'time', 'Time' : 'time_global', 'Shear rate' : 'shearrate', 'Stress' : 'stress', 'Strain' : 'strain', 
+             'Viscosity' : 'viscosity', 'Storage modulus' : 'gprime', 'Loss modulus' : 'gsecond', 'Frequency' : 'freq', 
+                'Axial force': 'normalforce', 'Gap': 'gap', 'Temperature': 'temp', 'Torque': 'torque', 'Displacement':'angle'}
+
+def _read_TA(file_url):
+
+    # First, replace ',' by '.' if needed ...
+    with open(file_url) as file:
+        contents = ''.join(file.readlines()).replace(',', '.')
+    with open(file_url, 'w') as file:
+        file.write(contents)
+
+    with open(file_url) as file:
+        line = file.readline()
+        meta = {'strs_factor':np.nan, 'strn_factor':np.nan, 'nforce_factor':1, 'step_name':[], 'nsteps':0}
+        step = 0
+        decimal = '.'
+        all_data = []
+        
+        # For TA, we will do small PD DataFrames for each step then merge them
+        while line:
+            line = file.readline() 
+            
+            # Gather some constants
+            if 'Stress constant' in line:
+                value = line.split('\t')[1].split(' ')[0]
+                meta['strs_factor'] = float(value)
+            if 'Strain constant' in line:
+                value = line.split('\t')[1].split(' ')[0]
+                meta['strn_factor'] = float(value)  
+
+            ### TODO : for cones / plates : check radius and get the conversion from 
+            # normal force to normal stress
+            if 'Geometry Type	Cone plate' in line:
+                _, diam = file.readline(), file.readline().split('\t')[1].split(' ')[0] # Diam usually written in mm 
+                meta['nforce_factor'] = 8/(np.pi*(float(diam)/1000)**2)
+            elif 'Geometry Type	Plate plate' in line:
+                _, diamline = file.readline(), file.readline().split('\t')[1].split(' ')[0]
+                meta['nforce_factor'] = 16/(np.pi*(float(diam)/1000)**2)
+
+
+            # Fetch step names
+            if 'Procedure name' in line:
+                while 'proceduresegments' not in line:
+                    meta['step_name'].append(line.split('\t')[1].rstrip()) # First line is stupid ...
+                    line = file.readline()
+
+            # Handle the actual data
+            if '[step]' in line:
+                data = ''
+                while line != '\n' and line != '':  # Gather actual data
+                    data += line
+                    line = file.readline()
+                now_data = pd.read_table(io.StringIO(data), delimiter='\t', decimal=decimal, skip_blank_lines=True, skiprows=[0,1,3])
+                now_data['step'] = step
+                step += 1
+                all_data.append(now_data)
+
+    meta['nsteps'] = len(all_data)
+    all_data = pd.concat(all_data)
+    print(meta)
+
+    # Make sure some columns are in the list of columns, because otherwise 
+    # it is a pain in the ass to work with them ...
+    enforced_vars = ['Oscillation stress', 'Oscillation strain', 
+                        'Torque', 'Stress', 'Strain', 'Displacement',
+                        'Shear rate', 'Axial force', 'Normal stress']
+    for var in enforced_vars:
+        if var not in all_data.columns:
+            all_data[var] = np.nan
+    
+    return all_data, meta
+
+def _format_TA(all_data, meta):
+        
+        for step in range(meta['nsteps']):
+            this_step = all_data['step'] == step
+            all_data.loc[this_step, 'name'] = meta['step_name'][step]
+            all_data.loc[this_step, 'step'] = step
+
+            # Trying to fill as many additional columns
+            is_oscstress = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation stress']))
+            is_oscstrain = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation strain']))
+            is_torque = np.any(np.isfinite(all_data.loc[this_step, 'Torque']))
+            is_stress = np.any(np.isfinite(all_data.loc[this_step, 'Stress']))
+            is_strain = np.any(np.isfinite(all_data.loc[this_step, 'Strain']))
+            is_displ  = np.any(np.isfinite(all_data.loc[this_step, 'Displacement']))
+            is_shearrate  = np.any(np.isfinite(all_data.loc[this_step, 'Shear rate']))
+            is_axialforce = np.any(np.isfinite(all_data.loc[this_step, 'Axial force']))
+            is_normalstress = np.any(np.isfinite(all_data.loc[this_step, 'Normal stress']))
+
+            # If oscillatory stuff, simplify columns
+            if is_oscstress:
+                all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Oscillation stress']
+                all_data.loc[this_step,'Strain'] = all_data.loc[this_step,'Oscillation strain']
+                all_data.loc[this_step,'Shear rate'] = all_data.loc[this_step,'Oscillation strain']* \
+                                                      all_data.loc[this_step,'Frequency']*2*np.pi
+           
+            # If Torque / Stress are missing, fill with the other value
+            if not is_torque and  is_stress:       
+                all_data.loc[this_step,'Torque'] = all_data.loc[this_step,'Stress']/meta['strn_factor']
+            elif not is_stress and is_torque:
+                all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Torque']*meta['strs_factor']*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
+
+            # Do a bit the same with normal stress
+            if not is_axialforce and is_normalstress:
+                all_data.loc[this_step,'Axial force'] = all_data.loc[this_step,'Normal stress']/meta['nforce_factor']
+            if not is_normalstress and is_axialforce:
+                all_data.loc[this_step,'Normal stress'] = all_data.loc[this_step, 'Axial force']*meta['nforce_factor']    
+            
+            # If strain is missing but other things are available (REALLY ?!)
+            no_strain = (not is_oscstrain) and (not is_strain)
+            if no_strain and is_displ:
+                all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Displacement'] - all_data.loc[this_step,'Displacement'].iloc[0])*meta['strn_factor']
+            elif no_strain and is_shearrate:
+                strain_rebuilt = cumtrapz(x=all_data.loc[this_step,'Step time'], y=all_data.loc[this_step,'Shear rate'])
+                all_data.loc[this_step,'Strain'] = np.insert(strain_rebuilt, 0, 0)
+            elif no_strain:
+                print(f'_format_TA > Cannot infer strain from step {step} : {meta["step_name"][step]} in TA file.')
+
+            all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Strain'] - all_data.loc[this_step,'Strain'].iloc[0])*100
+
+        # Re-build global time scale 
+        dt = np.array(all_data['Step time'].diff())
+        dt[dt < 0] = 0
+        dt[0] = 0
+        all_data['Time'] = np.cumsum(dt)
+
+        # Rename, add compatibility columns
+        all_data = all_data.rename(columns=ta_mapper)
+        all_data = all_data.drop(columns=['Tan(delta)', 'Oscillation stress', 'Oscillation strain', 'Oscillation strain rate'], errors='ignore')
+        all_data['type'] = ''
+        all_data['status'] = ''
+        
+        return all_data
+
 ###############################################################################################
 ## ANTON PAAR FUNCTIONS --------------------------------------------------------------
 
@@ -70,14 +209,12 @@ def _read_antonpaar(file_url):
             elif 'Interval données' in parts[0] or 'Data interval' in parts[0]:
                  # Means we "prepare" the table
                  # that will be read by Pandas
-                data = line                                 # header line
-                _1, _2 = file.readline(), file.readline()   # skip next two lines
-                line = file.readline()
+                data = ''                                 # header line
                 while line != '\n' and line != '':  # Gather actual data
                     data += line
                     line = file.readline()
 
-                df = pd.read_table(io.StringIO(data.replace(',','.')), delimiter='\t')
+                df = pd.read_table(io.StringIO(data.replace(',','.')), delimiter='\t', skiprows=[1,2])
                 df['name'] = name
                 df['step'] = step
                 all_data.append(df)
@@ -260,8 +397,8 @@ def _malvern_laos(df):
     # df['tnormed'] = df['time']*df['freq']
     # for step in steps:
     #     condition = (df['step'] == step) & (df['raw'] == False) & any(np.isfinite(df['freq']))
-    #     is_osc_step = np.any(np.isfinite(df.loc[condition, 'freq']))
-    #     if is_osc_step:
+    #     is_oscstrain = np.any(np.isfinite(df.loc[condition, 'freq']))
+    #     if is_oscstrain:
     #         tvals = np.array(df.loc[condition, 'tnormed'])
     #         keep = np.zeros_like(tvals)
     #         tref = tvals[0]
@@ -318,20 +455,25 @@ def read_rheology(file_url):
     """
     with open(file_url) as file:
         header = file.readline(150)
-        if 'Time (action)(s)' in header:
-            print('read_rheology > ' + file_url + ' is a Malvern file')
+        if 'Time (action)(s)' in header: # Malvern
+            filetype = 'Malvern'
             data = _format_malvern(_read_malvern(file_url, decim_sep=',', field_sep=';'))
-        else:
-            file_utf16 = open(file_url, encoding='utf-16-le')
-            header_16 = file_utf16.readline(150)
-            file_utf16.close()
-            if ('Test:' in header_16) or ('Projet:' in header_16) or ('Project:' in header_16):
-                data = _format_antonpaar(_read_antonpaar(file_url))
-                print('read_rheology > ' + file_url + ' is an Anton Paar file')
-            else:
-                print('read_rheology > Cannot detect file type')
-                return None
+        elif 'Filename' in header:      # TA
+            filetype = 'TA'
 
+            data, meta = _read_TA(file_url)
+            data = _format_TA(data, meta)
+        else:
+            with open(file_url, encoding='utf-16-le') as file16: # Anton Paar (?)
+                header16 = file16.readline(150)
+                if ('Test:' in header16) or ('Projet:' in header16) or ('Project:' in header16):
+                    data = _format_antonpaar(_read_antonpaar(file_url))
+                    filetype = 'Anton Paar'
+                else:
+                    data = None
+                    filetype = 'Unknown'
+
+    print(f'read_rheology > File type is {filetype}.')
     return data
 
 def assign_steps(df, steps, steptypes):
@@ -380,7 +522,7 @@ def list_steps(df):
         dfnow = df[df['step'] == step]
         iend = dfnow['time_global'].last_valid_index()
         steptype = f'{dfnow.iloc[0]["type"]:>15}'
-        stepname = f'{dfnow.iloc[0]["name"]:>40}'
+        stepname = f'{dfnow.iloc[0]["name"]:>30}'
         if iend is not None:
             stepduration = f'{dfnow.loc[iend,"time"]:>10.2f}'
             time_global = f'{dfnow.loc[iend, "time_global"]:>10.2f}'
@@ -477,10 +619,10 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
 
     ARGS : 
     - df [PANDAS.DATAFRAME] : your sliced rheology data
-    - fit_up_to [FLOAT] [OPTIONAL] : fit the flow curves up to some specific shear rate value 
+    - fit_from [float, default 1e-3] : from what shear rate you fit your flow curve (with a Herschel-Bulkley law)
+    - fit_up_to [float, default 1e3] : up to where you fit your flow curve (with the same HB law ...)
 
     OUTPUT :
-    - a figure (d'uh !)
     - FIT [Nx4 list] : the fit to your steps, with [step, sigma_Y, K, exponent]
     """   
     if len(df) > 0 and 'step' in df.keys():
@@ -522,7 +664,7 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
         return fits_all
     else:
         print('plot_flowcurve > No flowcurve step found')
-        return None, None
+        return None
 
 def plot_asweep(df, plot_stress=False):
     """ 
@@ -720,393 +862,3 @@ def build_fourier(proj, time, nmodes=10):
     for mno in range(nmodes):
         rebuild = rebuild + proj['amp'][mno]*np.cos(mno*time + proj['phs'][mno])
     return rebuild
-
-# # Additional functions if you think they could be useful, but not super well supported ...
-# def plot_startup(df, reversal=False, malvern=True, plot_vs_strain=False):
-#     """
-#     Function that helps plot shear startup and reversals
-#     ARGS : 
-#     - df [PANDAS.DATAFRAME] : your sliced rheology data
-#     - reversal [BOOL] [DEFAULT : FALSE] : bunch your startup data two-by-two and 
-#     consider that every odd (even) step is forward (reverse) done consecutively
-#     - malvern [BOOL] [DEFAULT : TRUE] : specify this to avoid issues with the shear
-#     stress not being negative during shear reversal tests.
-#     - plot_vs_strain [BOOL] [DEFAULT : FALSE] : plots stress vs. strain instead
-#     of strain vs. time
-
-#     OUTPUT :
-#     - a figure (d'uh !)
-#     """
-#     if len(df) > 0 and 'step' in df.keys():
-#         f1 = figure(title='Preshears', width=500, height=400)
-#         steps = np.unique(df['step'])
-#         strain_offset = np.zeros(len(steps) + 1)
-#         cmap = magma(np.size(steps)+1)
-
-#         # Fix things that are messed up first ...
-#         if reversal:
-#             steps_forward = steps[::2]
-#             steps_reverse = steps[1::2]
-#             if malvern:
-#                 df = fix_stress_malvern_reversal(df, steps_reverse)
-#             else:
-#                 df = fix_strain_antonpaar(df, steps) # XXX Will Fail with TA ...
-#         else:
-#             steps_forward = steps
-#             f1.x_range.start = 0
-#             f1.y_range.start = 0
-
-#         # Plot things, be careful with strain offsets
-#         for no, s in enumerate(steps):
-#             time = df[df['step'] == s]['time']
-#             strain, stress = df[df['step'] == s]['strain'], df[df['step'] == s]['stress']
-#             avgrate = np.mean(df[df['step'] == s]['shearrate'])
-#             if s in steps_forward and reversal: # No need for strain offsets if no reversal ...
-#                 strain_offset[no + 1] = df[df['step'] == s]['strain'].iloc[-1]
-
-#             if plot_vs_strain:  
-#                 f1.line(strain + strain_offset[no], stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
-#                     # ' : γ = ' + '{:2.1e}'.format(avgrate) + ' 1/s')
-                
-#                 f1.xaxis.axis_label, f1.yaxis.axis_label ='gamma (%)', 'sigma (Pa)'
-#                 strslim, strnlim = np.max(np.abs(df['stress'])), np.max(np.abs(df['strain']))
-
-#                 if reversal:
-#                     f1.line([0,strnlim], [0,0], line_dash='dotted', line_color='black')
-#                     f1.line([strnlim/2, strnlim/2], [-strslim,strslim], line_dash='dotted', line_color='black')
-#             else:
-#                 f1.line(time, stress, line_color=cmap[no], line_width=1, legend_label='Step ' + str(s))
-#                 f1.xaxis.axis_label, f1.yaxis.axis_label ='t (s)', 'sigma (Pa)'
-
-#         f1.legend.location='bottom_right'
-#         show(f1)
-#         return f1
-#     else:
-#         print('plot_startup > No startup step in the sliced dataset')
-#         return None
-
-# def plot_control_startup(df, malvern=True, strain_as_x=True):
-#     """
-#         A companion function to check if your shear startup / reversals make sense
-#         Plots the strain rate as a function of time. Since I don't have the target
-#         I can't do just an "error plot" 
-
-#         ARGS : 
-#         - df [PANDAS.DATAFRAME] : your sliced rheology data. Note : you need to run "
-
-#         OUTPUT :
-#         - a figure (d'uh !)
-#     """
-    
-#     f1 = figure(title='Strain rate control for reversal ...', y_axis_type='log')
-#     steps = np.unique(df['step'])
-#     cmap = magma(np.size(steps)+1)
-
-#     # Fix things that are messed up first ...
-#     if not malvern:
-#         df = fix_strain_antonpaar(df, steps)
-
-#     # Plot things, be careful with strain offsets
-#     for no, s in enumerate(steps):
-#         if strain_as_x:
-#             xdata = np.abs(df[df['step'] == s]['strain'])
-#             f1.xaxis.axis_label = '|gamma| (%)'
-#         else:
-#             xdata = df[df['step'] == s]['time']
-#             f1.xaxis.axis_label = 't (s)'
-
-#         rate = np.convolve(np.abs(df[df['step'] == s]['shearrate']), np.ones(5)/5, mode='same')
-#         est_rate = np.abs(np.mean(rate[-30:]))
-            
-#         f1.line(xdata, rate, line_color=cmap[no], line_width=1)
-#         f1.line([0,np.max(xdata)], [est_rate,est_rate], line_color=cmap[no], line_dash='dashed')
-
-#     show(f1)
-#     return f1
-
-
-    
-# def plot_creep(df, x_axis_type='log', y_axis_type='log', plot_shearrate = False):
-#     """
-#     Function that plots creep data
-
-#     ARGS : 
-#     - df [PANDAS.DATAFRAME] : your sliced rheology data
-#     - y_axis_type [STR] [DEFAULT : 'log'] : whether y axis is log or lin
-#     - x_axis_type [STR] [DEFAULT : 'log'] : whether x axis is log or lin
-#     - plot_shearrate [BOOL] [DEFAULT : False] : whether to plot gamma dot instead of gamma
-
-#     OUTPUT :
-#     - a figure (d'uh !)
-#     """
-#     if len(df) > 0 and 'step' in df.keys():
-#         f1 = figure(title='Creep', x_axis_type=x_axis_type, y_axis_type=y_axis_type)
-#         steps = np.unique(df['step'])
-#         cmap = magma(np.size(steps)+1)
-
-#         for no, cr in enumerate(steps):
-#             strn = df.loc[df['step'] == cr, 'strain']
-#             sr   = df.loc[df['step'] == cr, 'shearrate']
-#             tm = df.loc[df['step'] == cr, 'time']
-#             strs = df.loc[df['step'] == cr, 'stress'].to_numpy().mean()
-            
-#             if plot_shearrate:
-#                 f1.line(tm, sr, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' +  '{:4.2f}'.format(strs)  + ' Pa')
-#                 f1.yaxis.axis_label = 'gamma^dot (1/s)'
-#                 f1.legend.location = 'bottom_left'
-#             else:
-#                 f1.line(tm, strn, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', sigma = ' + '{:4.2f}'.format(strs) + ' Pa')
-#                 f1.line([1e-3,np.max(strn)],[1e-3,np.max(strn)], line_dash='dotted', line_color='black')
-#                 f1.yaxis.axis_label = 'gamma (%)'
-#                 f1.legend.location = 'top_left'
-
-#         f1.xaxis.axis_label = 'time (s)'
-#         show(f1)
-#         return f1
-#     else:
-#         print('plot_startup > No startup step in the sliced dataset')
-#         return None
-
-    
-# def plot_stepstrain(df, x_axis_type='log', y_axis_type='log', plot_strain=True):
-#     """
-#     Function that plots step strain data
-
-#     ARGS : 
-#     - df [PANDAS.DATAFRAME] : your sliced rheology data
-#     - y_axis_type [STR] [DEFAULT : 'log'] : whether y axis is log or lin
-#     - x_axis_type [STR] [DEFAULT : 'log'] : whether x axis is log or lin
-#     - plot_strain [BOOL] [DEFAULT : False] : whether to check if gamma is well "enforced" during step strain
-
-#     OUTPUT :
-#     - a figure (d'uh !)
-#     """
-#     if len(df) > 0 and 'step' in df.keys():
-#         f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=350)
-#         f2 = figure(title='Step Strain : Strain', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=750, height=200)
-#         steps = np.unique(df['step'])
-#         cmap = magma(np.size(steps))
-#         cmap_d = darken(magma(np.size(steps)), factor=0.8)
-
-#         for no, cr in enumerate(steps):
-#             strn_t = df.loc[df['step'] == cr, 'strain']
-#             strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
-#             tm = df.loc[df['step'] == cr, 'time']
-#             strs = df.loc[df['step'] == cr, 'stress']
-            
-#             if plot_strain:
-#                 f1.line(tm, strs, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
-#                 f2.line(tm, strn_t, line_color=cmap_d[no], line_width=1.5)
-#                 f2.line([1e-3,np.max(tm)],[strn, strn], line_dash='dotted', line_color='black')
-#             else:
-#                 f1.line(tm, strs, line_color=cmap[no], line_width=1, legend_label='Step ' + str(cr) + ', γ = ' +  '{:4.2f}'.format(strn))
-
-#         f2.x_range.start, f2.y_range.start=0.01, 0
-#         f1.x_range.start, f1.y_range.start=0.01, -0.1      
-#         f1.y_range.end = 10
-#         f1.legend.location = 'bottom_left'
-
-#         if plot_strain:
-#             f1.yaxis.axis_label = 'σ (Pa)'
-#             f1.xaxis.axis_label = 't  (s)'
-#             f1.legend.location = 'top_right'
-#             f2.yaxis.axis_label = 'γ (1)'
-#             f2.xaxis.axis_label = 't (s)'
-#             show(column(f1,f2))
-#         else:
-#             f1.legend.location = 'top_right'   
-#             f1.yaxis.axis_label = 'σ (Pa)'
-#             f1.xaxis.axis_label = 't (s)'
-#             show(f1)
-
-
-#         return (f1, f2)
-#     else:
-#         print('plot_stepstrain > No step strain "step" in the sliced dataset')
-#         return None, None
-
-    
-# def plot_stepstrain_normalised(df, x_axis_type='log', y_axis_type='log'):
-#     """
-#     Function that plots step strain data
-
-#     ARGS : 
-#     - df [PANDAS.DATAFRAME] : your sliced rheology data
-#     - y_axis_type [STR] [DEFAULT : 'log'] : whether y axis is log or lin
-#     - x_axis_type [STR] [DEFAULT : 'log'] : whether x axis is log or lin
-#     - plot_strain [BOOL] [DEFAULT : False] : whether to check if gamma is well "enforced" during step strain
-
-#     OUTPUT :
-#     - a figure (d'uh !)
-#     """
-
-#     if len(df) > 0 and 'step' in df.keys():
-   
-#         f1 = figure(title='Step Strain : Stress', x_axis_type=x_axis_type, y_axis_type=y_axis_type, width=600, height=500)
-#         steps = np.unique(df['step'])
-#         cmap = magma(np.size(steps))
-#         cmap_d = darken(magma(np.size(steps)), factor=0.8)
-
-#         for no, cr in enumerate(steps):
-#             strn_t = df.loc[df['step'] == cr, 'strain']
-#             strn = df.loc[df['step'] == cr, 'strain'].iloc[-1]
-#             tm = df.loc[df['step'] == cr, 'time']
-#             strs = df.loc[df['step'] == cr, 'stress']
-#             strs0 = np.mean(strs[(tm < 1) & (tm > 0.5)])
-#             f1.line(tm, strs/strs0, line_color=cmap_d[no], line_width=1.5, legend_label='Step ' + str(cr) + ', γ = ' + '{:4.2f}'.format(strn))
-        
-#         f1.x_range.start, f1.y_range.start = 1, -0.1      
-#         f1.y_range.end, f1.y_range.start = 1, 0.009
-#         f1.legend.location = 'bottom_left'   
-#         f1.yaxis.axis_label = 'σ / σ_0 '
-#         f1.xaxis.axis_label = 't (s)'
-#         show(f1)
-
-#         return (f1)
-#     else:
-#         print('plot_stepstrain_normalised > No step strain "step" in the sliced dataset')
-#         return None, None
-
-# def plot_normalforce(df):
-#     """ 
-#     Function to plot flow normal forces (as a function of gamma_dot by default, but gamma also possible)
-
-#     ARGS : 
-#     - df [PANDAS.DATAFRAME] : your sliced rheology data
-#     - steps [LIST] : your step(s) you want to plot (can be only one step)
-
-#     OUTPUT :
-#     - a figure (d'uh !)
-#     """
-#     steps = np.unique(df['step'])
-
-#     # Create and format figure
-#     f1 = figure(x_axis_type='log', y_axis_type='linear', title='Normal Force', tooltips=[('x','$x'),('y','$y')])
-#     f1.y_range.start, f1.y_range.end = -1,1
-#     cmap, cmap_line = magma(np.size(steps)+1), darken(magma(np.size(steps)+1))
-
-    
-#     for no, step in enumerate(steps):
-#         # Check that step makes sense
-#         df_now = df[df['step'] == step]
-    
-#         if df_now.iloc[0]['type'] == 'Flowcurve':
-#             print('plot_normalforce > Step ' + str(step) + ' is a flow curve. Plotting N = f(gamma_dot)')
-#             f1.scatter(df_now['shearrate'], df_now['normalforce'], line_color=cmap_line[no], fill_color=cmap[no], marker='o', legend_label='Step ' + str(step))    
-#             f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ^dot (1/s)', 'F_N (N)'
-#         else:
-#             print('plot_normalforce > Step ' + str(step) + ' not a flow curve. Plotting N = f(gamma)')
-#             f1.scatter(df_now['strain'], df_now['normalforce'], line_color=cmap[no], fill_color=cmap[no], marker='diamond',  legend_label='Step ' + str(step))    
-#             f1.xaxis.axis_label, f1.yaxis.axis_label = 'γ (1)', 'F_N (N)'
-
-#     show(f1)
-#     time.sleep(0.5)
-
-#     return f1
-
-
-# ##############################################################################################
-# ## TA FUNCTIONS --------------------------------------------------------------
-# ta_mapper = {'Step time' : 'time', 'Time' : 'time_global', 'Shear rate' : 'shearrate', 'Stress' : 'stress', 'Strain' : 'strain', 'Viscosity' : 'viscosity', 
-#                 'Storage modulus' : 'gprime', 'Loss modulus' : 'gsecond', 'Frequency' : 'freq', 'Axial force': 'normalforce', 'Gap': 'gap', 'Temperature': 'temp', 'Torque': 'torque'}
-
-# def _read_TA(file_url):
-#     with open(file_url) as file:
-#         line_str = file.readline()
-#         is_data_line = False
-#         step_names = []
-#         all_data = []
-        
-        
-#         # For TA, we will do small PD DataFrames for each step then merge them
-#         while line_str:
-#             line_str = file.readline() 
-            
-#             # Gather some constants
-#             if 'Stress constant' in line_str:
-#                 stress_constant = float(line_str.split('\t')[1].split(' ')[0])
-#             if 'Strain constant' in line_str:
-#                 strain_constant = float(line_str.split('\t')[1].split(' ')[0])  
-
-#             # Fetch step names
-#             if 'Procedure name' in line_str:
-#                     step_names.append(line_str.split('\t')[1].rstrip()) # First line is stupid ...
-#                     while 'proceduresegments' not in line_str:
-#                         line_str = file.readline().strip()
-#                         step_names.append(line_str)
-#                     step_names.pop()
-
-#             # Handle the actual data
-#             if is_data_line and line_str == '\n': # Switch off is_data "mode" at end of each step
-#                 is_data_line = False
-#                 now_data = pd.read_table(io.StringIO(data_str), delimiter='\t', skip_blank_lines=True, skiprows=[0,2])
-#                 all_data.append(now_data)
-
-#             elif '[step]' in line_str: # Switch on is_data "mode"
-#                 is_data_line = True
-#                 data_str = ''
-#             elif is_data_line:
-#                 data_str = data_str + line_str 
-
-#     return all_data, step_names, (stress_constant, strain_constant)
-
-# def _format_TA(all_data, step_names, constants):
-
-#         for step in range(len(all_data)):
-#             all_data[step]['name'] = step_names[step]
-#             all_data[step]['step'] = step
-
-#             # Oscillatory stuff
-#             is_osc_step = 'Oscillation stress' in all_data[step].columns
-
-#             if is_osc_step:
-#                 all_data[step]['Stress'] = all_data[step]['Oscillation stress']
-#                 all_data[step]['Strain'] = all_data[step]['Oscillation strain']
-#                 all_data[step]['Viscosity'] = np.nan
-#                 all_data[step]['Shear rate'] = np.nan
-#             if not is_osc_step:
-#                 all_data[step]['Frequency'] = np.nan
-#                 all_data[step]['Storage modulus'] = np.nan
-#                 all_data[step]['Loss modulus'] = np.nan
-
-#             # Temperature stuff
-#             no_temp = 'Temperature' not in all_data[step].columns
-#             if no_temp:
-#                 all_data[step]['Temperature'] = np.nan 
-
-#             # Gap
-#             no_gap = 'Gap' not in all_data[step].columns
-#             if no_gap:
-#                 all_data[step]['Gap'] = np.nan
-
-#             # Normal force
-#             no_NormalForce = 'Axial force' not in all_data[step].columns
-#             if no_NormalForce:
-#                 all_data[step]['Axial force'] = np.nan
-
-#             # Torque
-#             no_Torque = 'Torque' not in all_data[step].columns
-#             if no_Torque:       
-#                 all_data[step]['Torque'] = all_data[step]['Stress']/constants[0]
-#             else:
-#                 all_data[step]['Stress'] = all_data[step]['Torque']*constants[0]*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
-
-#             # Strain (REALLY ?!)
-#             no_Strain = 'Strain' not in all_data[step].columns and 'Oscillation strain' not in all_data[step].columns
-#             if no_Strain and 'Displacement' in all_data[step].columns:
-#                 all_data[step]['Strain'] = (all_data[step]['Displacement'] - all_data[step]['Displacement'].iloc[0])*constants[1]*100
-#             elif no_Strain and 'Shear rate' in all_data[step].columns:
-#                 all_data[step]['Strain'] = np.insert(cumtrapz(x=all_data[step]['Step time'], y=all_data[step]['Shear rate']), 0, 0)*100
-#             elif no_Strain:
-#                 print('>> format_TA : Could not infer strain from data at step n°' + str(step))
-#                 all_data[step]['Strain'] = np.nan
-#             else:
-#                 all_data[step]['Strain'] = (all_data[step]['Strain'] - all_data[step]['Strain'].iloc[0])*100
-
-#         # Final tweaks
-#         all_data = pd.concat(all_data)
-#         all_data = all_data.rename(columns=ta_mapper)
-#         all_data['type'] = ''
-#         all_data['status'] = ''
-        
-#         return all_data
