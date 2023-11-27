@@ -39,8 +39,6 @@ import matplotlib.cm as cm
 
 import time
 
-
-
 ##############################################################################################
 ## TA FUNCTIONS --------------------------------------------------------------
 ta_mapper = {'Step time' : 'time', 'Time' : 'time_global', 'Shear rate' : 'shearrate', 'Stress' : 'stress', 'Strain' : 'strain', 
@@ -103,7 +101,6 @@ def _read_TA(file_url):
 
     meta['nsteps'] = len(all_data)
     all_data = pd.concat(all_data)
-    print(meta)
 
     # Make sure some columns are in the list of columns, because otherwise 
     # it is a pain in the ass to work with them ...
@@ -118,66 +115,68 @@ def _read_TA(file_url):
 
 def _format_TA(all_data, meta):
         
-        for step in range(meta['nsteps']):
-            this_step = all_data['step'] == step
-            all_data.loc[this_step, 'name'] = meta['step_name'][step]
-            all_data.loc[this_step, 'step'] = step
+    all_data['name'] = ''
 
-            # Trying to fill as many additional columns
-            is_oscstress = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation stress']))
-            is_oscstrain = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation strain']))
-            is_torque = np.any(np.isfinite(all_data.loc[this_step, 'Torque']))
-            is_stress = np.any(np.isfinite(all_data.loc[this_step, 'Stress']))
-            is_strain = np.any(np.isfinite(all_data.loc[this_step, 'Strain']))
-            is_displ  = np.any(np.isfinite(all_data.loc[this_step, 'Displacement']))
-            is_shearrate  = np.any(np.isfinite(all_data.loc[this_step, 'Shear rate']))
-            is_axialforce = np.any(np.isfinite(all_data.loc[this_step, 'Axial force']))
-            is_normalstress = np.any(np.isfinite(all_data.loc[this_step, 'Normal stress']))
+    for step in range(meta['nsteps']):
+        this_step = all_data['step'] == step
+        all_data.loc[this_step, 'name'] = meta['step_name'][step]
+        all_data.loc[this_step, 'step'] = step
 
-            # If oscillatory stuff, simplify columns
-            if is_oscstress:
-                all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Oscillation stress']
-                all_data.loc[this_step,'Strain'] = all_data.loc[this_step,'Oscillation strain']
-                all_data.loc[this_step,'Shear rate'] = all_data.loc[this_step,'Oscillation strain']* \
-                                                      all_data.loc[this_step,'Frequency']*2*np.pi
-           
-            # If Torque / Stress are missing, fill with the other value
-            if not is_torque and  is_stress:       
-                all_data.loc[this_step,'Torque'] = all_data.loc[this_step,'Stress']/meta['strn_factor']
-            elif not is_stress and is_torque:
-                all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Torque']*meta['strs_factor']*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
+        # Trying to fill as many additional columns
+        is_oscstress = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation stress']))
+        is_oscstrain = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation strain']))
+        is_torque = np.any(np.isfinite(all_data.loc[this_step, 'Torque']))
+        is_stress = np.any(np.isfinite(all_data.loc[this_step, 'Stress']))
+        is_strain = np.any(np.isfinite(all_data.loc[this_step, 'Strain']))
+        is_displ  = np.any(np.isfinite(all_data.loc[this_step, 'Displacement']))
+        is_shearrate  = np.any(np.isfinite(all_data.loc[this_step, 'Shear rate']))
+        is_axialforce = np.any(np.isfinite(all_data.loc[this_step, 'Axial force']))
+        is_normalstress = np.any(np.isfinite(all_data.loc[this_step, 'Normal stress']))
 
-            # Do a bit the same with normal stress
-            if not is_axialforce and is_normalstress:
-                all_data.loc[this_step,'Axial force'] = all_data.loc[this_step,'Normal stress']/meta['nforce_factor']
-            if not is_normalstress and is_axialforce:
-                all_data.loc[this_step,'Normal stress'] = all_data.loc[this_step, 'Axial force']*meta['nforce_factor']    
-            
-            # If strain is missing but other things are available (REALLY ?!)
-            no_strain = (not is_oscstrain) and (not is_strain)
-            if no_strain and is_displ:
-                all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Displacement'] - all_data.loc[this_step,'Displacement'].iloc[0])*meta['strn_factor']
-            elif no_strain and is_shearrate:
-                strain_rebuilt = cumtrapz(x=all_data.loc[this_step,'Step time'], y=all_data.loc[this_step,'Shear rate'])
-                all_data.loc[this_step,'Strain'] = np.insert(strain_rebuilt, 0, 0)
-            elif no_strain:
-                print(f'_format_TA > Cannot infer strain from step {step} : {meta["step_name"][step]} in TA file.')
-
-            all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Strain'] - all_data.loc[this_step,'Strain'].iloc[0])*100
-
-        # Re-build global time scale 
-        dt = np.array(all_data['Step time'].diff())
-        dt[dt < 0] = 0
-        dt[0] = 0
-        all_data['Time'] = np.cumsum(dt)
-
-        # Rename, add compatibility columns
-        all_data = all_data.rename(columns=ta_mapper)
-        all_data = all_data.drop(columns=['Tan(delta)', 'Oscillation stress', 'Oscillation strain', 'Oscillation strain rate'], errors='ignore')
-        all_data['type'] = ''
-        all_data['status'] = ''
+        # If oscillatory stuff, simplify columns
+        if is_oscstress:
+            all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Oscillation stress']
+            all_data.loc[this_step,'Strain'] = all_data.loc[this_step,'Oscillation strain']
+            all_data.loc[this_step,'Shear rate'] = all_data.loc[this_step,'Oscillation strain']* \
+                                                    all_data.loc[this_step,'Frequency']*2*np.pi
         
-        return all_data
+        # If Torque / Stress are missing, fill with the other value
+        if not is_torque and  is_stress:       
+            all_data.loc[this_step,'Torque'] = all_data.loc[this_step,'Stress']/meta['strn_factor']
+        elif not is_stress and is_torque:
+            all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Torque']*meta['strs_factor']*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
+
+        # Do a bit the same with normal stress
+        if not is_axialforce and is_normalstress:
+            all_data.loc[this_step,'Axial force'] = all_data.loc[this_step,'Normal stress']/meta['nforce_factor']
+        if not is_normalstress and is_axialforce:
+            all_data.loc[this_step,'Normal stress'] = all_data.loc[this_step, 'Axial force']*meta['nforce_factor']    
+        
+        # If strain is missing but other things are available (REALLY ?!)
+        no_strain = (not is_oscstrain) and (not is_strain)
+        if no_strain and is_displ:
+            all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Displacement'] - all_data.loc[this_step,'Displacement'].iloc[0])*meta['strn_factor']
+        elif no_strain and is_shearrate:
+            strain_rebuilt = cumtrapz(x=all_data.loc[this_step,'Step time'], y=all_data.loc[this_step,'Shear rate'])
+            all_data.loc[this_step,'Strain'] = np.insert(strain_rebuilt, 0, 0)
+        elif no_strain:
+            print(f'_format_TA > Cannot infer strain from step {step} : {meta["step_name"][step]} in TA file.')
+
+        all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Strain'] - all_data.loc[this_step,'Strain'].iloc[0])*100
+
+    # Re-build global time scale 
+    dt = np.array(all_data['Step time'].diff())
+    dt[dt < 0] = 0
+    dt[0] = 0
+    all_data['Time'] = np.cumsum(dt)
+
+    # Rename, add compatibility columns
+    all_data = all_data.rename(columns=ta_mapper)
+    all_data = all_data.drop(columns=['Tan(delta)', 'Oscillation stress', 'Oscillation strain', 'Oscillation strain rate'], errors='ignore')
+    all_data['type'] = ''
+    all_data['status'] = ''
+    
+    return all_data
 
 ###############################################################################################
 ## ANTON PAAR FUNCTIONS --------------------------------------------------------------
@@ -205,7 +204,7 @@ def _read_antonpaar(file_url):
             if 'Résultat' in parts[0] or 'Result' in parts[0]:
                 name = parts[1]
             elif 'Intervalle et points de données' in parts[0] or 'Interval and data points' in parts[0]:
-                step = int(parts[1])
+                step += 1
             elif 'Interval données' in parts[0] or 'Data interval' in parts[0]:
                  # Means we "prepare" the table
                  # that will be read by Pandas
@@ -373,11 +372,15 @@ def _malvern_laos(df):
 
     # First identify raw LAOS data
     is_raw = np.isnan(df['stress'])
+
     df.loc[is_raw, 'raw'] = True
     not_raw = df['raw'] == False
 
     if np.all(df['raw'] == False):
         print('_malvern_laos > No LAOS data found')
+        return df
+    if 'angle' or 'torque' not in df.keys():
+        print('_malvern_laos > Cannot process LAOS from file since either "angle" or "torque" data missing')
         return df
 
     # Find stress / strain ratio, use it to define raw_oscstrain and raw_oscstress
@@ -521,11 +524,11 @@ def list_steps(df):
     for step in steps:
         dfnow = df[df['step'] == step]
         iend = dfnow['time_global'].last_valid_index()
-        steptype = f'{dfnow.iloc[0]["type"]:>15}'
-        stepname = f'{dfnow.iloc[0]["name"]:>30}'
+        steptype = f'{dfnow.iloc[0]["type"]:>12}'
+        stepname = f'{dfnow.iloc[0]["name"]:>25}'
         if iend is not None:
-            stepduration = f'{dfnow.loc[iend,"time"]:>10.2f}'
-            time_global = f'{dfnow.loc[iend, "time_global"]:>10.2f}'
+            stepduration = f'{dfnow.loc[iend,"time"]:>7.1f}'
+            time_global = f'{dfnow.loc[iend, "time_global"]:>7.1f}'
             print('  * Step n°' + str(step) + ' \t : '+ stepname + '\t is a ' + steptype + ' | Duration : ' + str(stepduration) + ' s | Total time is : ' + str(time_global) + ' s')
         else:
             print('  * Step n°' + str(step) + ' \t : '+ stepname + '\t is a ' + steptype + ' | Is a bit mysterious')
@@ -613,16 +616,22 @@ def darken(palette, factor=0.6):
     else:
         return hexvals # Returns a list if a list was input
  
-def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
+def plot_flowcurve(df, fit_curve=True, fit_from=1e-3, fit_up_to=1e3, log_xaxis=True, log_yaxis=True, cmap=cm.cividis):
     """ 
     Function to plot flow curve steps
 
     ARGS : 
     - df [PANDAS.DATAFRAME] : your sliced rheology data
+    - fit_curve [bool, default False] : fit your data to a Herschel-Bulkley (or Bingham) law ?
     - fit_from [float, default 1e-3] : from what shear rate you fit your flow curve (with a Herschel-Bulkley law)
     - fit_up_to [float, default 1e3] : up to where you fit your flow curve (with the same HB law ...)
+    - log_xaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your x axis to be in log ?
+    - log_yaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your y axis to be in log ?
+    - cmap [matplotlib.cm color map, default matplotlib.cm.viridis] : your color map
 
     OUTPUT :
+    - fig : YOUR FIGURE (d'uh !)
+    - ax : YOUR AXES
     - FIT [Nx4 list] : the fit to your steps, with [step, sigma_Y, K, exponent]
     """   
     if len(df) > 0 and 'step' in df.keys():
@@ -633,12 +642,11 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
         fig, ax = plt.subplots()
         ax.set_xlabel('γ (1/s)'), ax.set_ylabel('τ (Pa)')
         ax.set_title('Flow Curve')
-        cmap = cm.magma
 
         for no, step in enumerate(steps):
             # Check that step makes sense
             if len(steps) > 1:
-                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+                color = np.array(cmap((step-min(steps))/(max(steps)- min(steps))))
             else:
                 color = np.array([0,0,0,1])
 
@@ -646,49 +654,54 @@ def plot_flowcurve(df, fit_from=1e-3, fit_up_to=1e3):
             steptype = flow_curve.iloc[0]['type'].lower()
             if steptype not in ('flowcurve', 'flow curve'):
                 print('plot_flowcurve >  Warning : Cannot confirm that step ' + str(step) + ' is a flow curve.')    
-            ys, K, exponent = _fit_HB(flow_curve['shearrate'], flow_curve['stress'], fit_up_to=fit_up_to, fit_from=fit_from)
-            fits_all[no,:] = [step, ys, K, exponent]
 
-            # Plotting + Display + producing the fitted curve
-            shearrates = flow_curve['shearrate']
-            fitted_stress = ys + K*shearrates**exponent 
-            ax.loglog(shearrates, fitted_stress, color=0.8*color)
-            ax.loglog(shearrates,flow_curve['stress'], marker='s', color=0.8*color, 
-                      markersize=3,markerfacecolor=color, label="Flow curve, step " + str(step))
-            fig.legend()    
-            print(f'plot_flowcurve > fit for step {step} : {ys:.2f} + {K:.2f} γ^({exponent:.2f})')
+            if fit_curve:
+                ys, K, exponent = _fit_HB(flow_curve['shearrate'], flow_curve['stress'], fit_up_to=fit_up_to, fit_from=fit_from)
+                fits_all[no,:] = [step, ys, K, exponent]
+                shearrates = flow_curve['shearrate']
+                fitted_stress = ys + K*shearrates**exponent 
+                print(f'plot_flowcurve > fit for step {step} : {ys:.2f} + {K:.2f} γ^({exponent:.2f})')
+                ax.plot(shearrates, fitted_stress, color=0.8*color)
         
-        plt.show()
-        time.sleep(0.5)
+            # Plotting + Display + producing the fitted curve    
+            ax.plot(shearrates,flow_curve['stress'], 's', color=0.8*color, 
+                      markersize=3,markerfacecolor=color, label="Flow curve, step " + str(step))
+         
+        if log_xaxis: ax.set_xscale('log')
+        if log_yaxis: ax.set_yscale('log')  
 
-        return fits_all
+        return fig, ax, fits_all
     else:
         print('plot_flowcurve > No flowcurve step found')
         return None
 
-def plot_asweep(df, plot_stress=False):
+def plot_asweep(df,  plot_stress=False, plot_gsecond=True, log_xaxis=True, log_yaxis=True, cmap=cm.viridis):
     """ 
     Function to plot amplitude sweeps
 
-    ARGS : 
-    - df [PANDAS.DATAFRAME] : your sliced rheology data
-    - steps [LIST] : your step(s) you want to plot (can be only one step)
+     df [PANDAS.DATAFRAME] : your sliced rheology data
+    - plot_gsecond [BOOL] [OPTIONAL, DEFAULT TRUE] : adds the 
+    - plot_stress [BOOL] [OPTIONAL, DEFAULT FALSE] : adds the global oscillatory stress to the plot
+    - log_xaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your x axis to be in log ?
+    - log_yaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your y axis to be in log ?
+    - cmap [matplotlib.cm color map, default matplotlib.cm.viridis] : your color map
 
-    OUTPUT :
-    - a figure (d'uh !)
+    RETURNS :
+    - fig : YOUR FIGURE (d'uh !)
+    - ax : YOUR AXES
     """
+
     if len(df) > 0 and 'step' in df.keys():
         # Create and format figure
         fig, ax = plt.subplots()
         ax.set_xlabel('γ (1)'), ax.set_ylabel("G', G'' (Pa)")
         ax.set_title('Amplitude Sweep')
-        cmap = cm.magma
         steps = np.unique(df['step'])
         
         for no, step in enumerate(steps):
             # Check that step makes sense
             if len(steps) > 1:
-                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+                color = np.array(cmap((step-min(steps))/(max(steps)- min(steps))))
             else:
                 color = np.array([0,0,0,1])
             amp_sweep = df[df['step'] == step]
@@ -696,46 +709,53 @@ def plot_asweep(df, plot_stress=False):
 
             if steptype not in('amplitudesweep', 'asweep', 'amplitude sweep', 'amp sweep', 'a sweep'):
                 print('plot_asweep > Warning : Cannot confirm that step ' + str(step) + ' is an amplitude sweep')
-            ax.loglog(amp_sweep['strain'], amp_sweep['gprime'] , markersize=3, marker='s', color=0.8*color, 
-                      markerfacecolor=color, label="G' , step " + str(step))
-            ax.loglog(amp_sweep['strain'], amp_sweep['gsecond'], markersize=3, marker='o', color=0.8*color, 
-                      markerfacecolor='lightgray', label="G'' , step " + str(step))
-            if plot_stress: ax.loglog(amp_sweep['strain'], amp_sweep['stress'], markersize=3, marker='^', color=color[no], 
-                                      markerfacecolor=cmap[no], label='σ , step ' + str(step))
-        
-        fig.legend()    
-        time.sleep(0.5)
-        plt.show()
 
-        return 0
+            ax.plot(amp_sweep['strain'], amp_sweep['gprime'], 's', markersize=3, color=0.8*color, 
+                      markerfacecolor=color, label="G' , step " + str(step))
+            
+            if plot_gsecond: ax.plot(amp_sweep['strain'], amp_sweep['gsecond'], 'o', markersize=3, color=0.8*color, 
+                      markerfacecolor='lightgray', label="G'' , step " + str(step))
+                
+            if plot_stress: ax.plot(amp_sweep['strain'], amp_sweep['stress'], '^', markersize=3, color=0.8*color, 
+                                      markerfacecolor=color, label='σ , step ' + str(step))
+                  
+        if log_xaxis: ax.set_xscale('log')
+        if log_yaxis: ax.set_yscale('log')  
+        
+        return fig, ax
     else:
-        print('plot_asweep > No amplitude sweep step in the sliced dataset')
+        print('plot_Asweep > No amplitude sweep step in the sliced dataset')
         return None
 
 
-def plot_fsweep(df, plot_stress=False):
+def plot_fsweep(df, plot_stress=False, plot_gsecond=True, log_xaxis=True, log_yaxis=True, cmap=cm.plasma):
     """ 
     Function to plot frequency sweeps
 
-    ARGS : 
+        ARGS : 
     - df [PANDAS.DATAFRAME] : your sliced rheology data
-    - plot_stress [BOOL] [OPTIONAL] : add the global oscillatory stress to the plot
+    - plot_gsecond [BOOL] [OPTIONAL, DEFAULT TRUE] : adds the 
+    - plot_stress [BOOL] [OPTIONAL, DEFAULT FALSE] : adds the global oscillatory stress to the plot
+    - log_xaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your x axis to be in log ?
+    - log_yaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your y axis to be in log ?
+    - cmap [matplotlib.cm color map, default matplotlib.cm.viridis] : your color map
 
-    OUTPUT :
-    - a figure (d'uh !)
+    RETURNS :
+    - fig : YOUR FIGURE (d'uh !)
+    - ax : YOUR AXES
+
     """
     if len(df) > 0 and 'step' in df.keys():
         # Create and format figure
         fig, ax = plt.subplots()
         ax.set_xlabel('f (Hz)'), ax.set_ylabel("G', G'' (Pa)")
         ax.set_title('Frequency Sweep')
-        cmap = cm.magma
         steps = np.unique(df['step'])
         
         for no, step in enumerate(steps):
             # Check that step makes sense
             if len(steps) > 1:
-                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+                color = np.array(cmap((step-min(steps))/(max(steps)- min(steps))))
             else:
                 color = np.array([0,0,0,1])
             f_sweep = df[df['step'] == step]
@@ -743,29 +763,36 @@ def plot_fsweep(df, plot_stress=False):
 
             if steptype not in('freqsweep', 'fsweep', 'frequency sweep', 'freq sweep', 'f sweep'):
                 print('plot_fsweep > Warning : Cannot confirm that step ' + str(step) + ' is a frequency sweep')
-            ax.loglog(f_sweep['freq'], f_sweep['gprime'], markersize=3, marker='s', color=0.8*color, 
+
+            ax.plot(f_sweep['freq'], f_sweep['gprime'], 's', markersize=3, color=0.8*color, 
                       markerfacecolor=color, label="G' , step " + str(step))
-            ax.loglog(f_sweep['freq'], f_sweep['gsecond'], markersize=3, marker='o', color=0.8*color, 
+            
+            if plot_gsecond: ax.plot(f_sweep['freq'], f_sweep['gsecond'], 'o', markersize=3, color=0.8*color, 
                       markerfacecolor='lightgray', label="G'' , step " + str(step))
-            if plot_stress: ax.loglog(f_sweep['freq'], f_sweep['stress'], marker='^', color=color[no], 
-                                      markerfacecolor=cmap[no], markersize=3, label='σ , step ' + str(step))
+            
+            if plot_stress: ax.plot(f_sweep['freq'], f_sweep['stress'], '^', color=0.8*color, 
+                                      markerfacecolor=color, markersize=3, label='σ , step ' + str(step))
+                
+        if log_xaxis: ax.set_xscale('log')
+        if log_yaxis: ax.set_yscale('log')
         
-        fig.legend()    
-        time.sleep(0.5)
-        plt.show()
-        return 0
+        return fig, ax
     else:
-        print('plot_fsweep > No frequency sweep step in the sliced dataset')
+        print('plot_Fsweep > No frequency sweep step in the sliced dataset')
         return None
     
-def plot_tsweep(df, plot_stress=False):
+def plot_tsweep(df, plot_gsecond=True, plot_stress=False, log_xaxis=True, log_yaxis=True, cmap=cm.magma):
     """ 
     Function to plot time sweeps
 
     ARGS : 
     - df [PANDAS.DATAFRAME] : your sliced rheology data
-    - plot_stress [BOOL] [OPTIONAL] : add the global oscillatory stress to the plot
-
+    - plot_gsecond [BOOL] [OPTIONAL, DEFAULT TRUE] : adds the 
+    - plot_stress [BOOL] [OPTIONAL, DEFAULT FALSE] : adds the global oscillatory stress to the plot
+    - log_xaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your x axis to be in log ?
+    - log_yaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your y axis to be in log ?
+    - cmap [matplotlib.cm color map, default matplotlib.cm.magma] : your color map
+    
     OUTPUT :
     - a figure (d'uh !)
     """
@@ -774,13 +801,12 @@ def plot_tsweep(df, plot_stress=False):
         fig, ax = plt.subplots()
         ax.set_xlabel('t (s)'), ax.set_ylabel("G', G'' (Pa)")
         ax.set_title('Time Sweep')
-        cmap = cm.magma
         steps = np.unique(df['step'])
         
         for no, step in enumerate(steps):
             # Check that step makes sense
             if len(steps) > 1:
-                color = cmap(256*(step-min(steps)))/(max(steps)- min(steps))
+                color = np.array(cmap((step-min(steps))/(max(steps)- min(steps))))
             else:
                 color = np.array([0,0,0,1])
             t_sweep = df[df['step'] == step]
@@ -788,20 +814,68 @@ def plot_tsweep(df, plot_stress=False):
 
             if steptype not in('timesweep', 'tsweep', 'time sweep', 't sweep'):
                 print('plot_tsweep > Warning : Cannot confirm that step ' + str(step) + ' is a frequency sweep')
-            ax.loglog(t_sweep['time'], t_sweep['gprime'], markersize=3, marker='s', color=0.8*color, 
+
+            ax.plot(t_sweep['time'], t_sweep['gprime'], 's', markersize=3, markeredgecolor=0.8*color, 
                       markerfacecolor=color, label="G' , step " + str(step))
-            ax.loglog(t_sweep['time'], t_sweep['gsecond'], marker='o', color=0.8*color, 
+            
+            if plot_gsecond: ax.plot(t_sweep['time'], t_sweep['gsecond'], 'o', color=0.8*color, 
                       markerfacecolor='lightgray', markersize=3, label="G'' , step " + str(step))
-            if plot_stress: ax.loglog(t_sweep['time'], t_sweep['stress'], marker='^', color=color[no], 
-                                      markerfacecolor=cmap[no], markersize=3, label='σ , step ' + str(step))
+                
+            if plot_stress: ax.plot(t_sweep['time'], t_sweep['stress'], marker='^', color=0.8*color, 
+                                      markerfacecolor=color, markersize=3, label='σ , step ' + str(step))
         
-        fig.legend()    
-        time.sleep(0.5)
-        plt.show()
-        return 0
+        if log_xaxis: ax.set_xscale('log')
+        if log_yaxis: ax.set_yscale('log')
+        
+        return fig, ax
     else:
-        print('plot_fsweep > No time sweep step in the sliced dataset')
+        print('plot_Tsweep > No time sweep step in the sliced dataset')
         return None
+
+   
+def plot_preshear(df, log_xaxis=True, log_yaxis=True, cmap=cm.inferno):
+    """ 
+    Function to plot preshears (i.e. when you apply a constant shear rate)
+
+    ARGS : 
+    - df [PANDAS.DATAFRAME] : your sliced rheology data
+    - log_xaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your x axis to be in log ?
+    - log_yaxis [BOOL] [OPTIONAL, DEFAULT TRUE] : well, do you want your y axis to be in log ?
+    - cmap [matplotlib.cm color map, default matplotlib.cm.magma] : your color map
+    
+    OUTPUT :
+    - a figure (d'uh !)
+    """
+    if len(df) > 0 and 'step' in df.keys():
+        # Create and format figure
+        fig, ax = plt.subplots()
+        ax.set_xlabel('t (s)'), ax.set_ylabel("σ (Pa)")
+        ax.set_title('Preshears')
+        steps = np.unique(df['step'])
+        
+        for no, step in enumerate(steps):
+            # Check that step makes sense
+            if len(steps) > 1:
+                color = np.array(cmap((step-min(steps))/(max(steps)- min(steps))))
+            else:
+                color = np.array([0,0,0,1])
+            preshear = df[df['step'] == step]
+            steptype = preshear.iloc[0]['type'].lower()
+
+            if steptype not in('preshear', 'peak hold', 'pre-shear', 'pre shear'):
+                print('plotpreshear > Warning : Cannot confirm that step ' + str(step) + ' is a preshear')
+
+            ax.plot(preshear['time'], preshear['stress'], 's', markersize=3, markeredgecolor=0.8*color, 
+                      markerfacecolor=color, label="G' , step " + str(step))
+        
+        if log_xaxis: ax.set_xscale('log')
+        if log_yaxis: ax.set_yscale('log')
+        
+        return fig, ax
+    else:
+        print('plot_Preshear > No pershear step in the sliced dataset')
+        return None
+
 
 ### Fourier projection and reconstruction
 
