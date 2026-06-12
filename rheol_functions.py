@@ -31,8 +31,7 @@ have to remember it.
 import io
 import numpy as np
 import pandas as pd
-from scipy.integrate import cumtrapz
-from scipy import stats
+from scipy.integrate import cumulative_trapezoid
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -41,142 +40,190 @@ import time
 
 ##############################################################################################
 ## TA FUNCTIONS --------------------------------------------------------------
-ta_mapper = {'Step time' : 'time', 'Time' : 'time_global', 'Shear rate' : 'shearrate', 'Stress' : 'stress', 'Strain' : 'strain', 
-             'Viscosity' : 'viscosity', 'Storage modulus' : 'gprime', 'Loss modulus' : 'gsecond', 'Frequency' : 'freq', 
-                'Axial force': 'normalforce', 'Gap': 'gap', 'Temperature': 'temp', 'Torque': 'torque', 'Displacement':'angle'}
 
-def _read_TA(file_url):
+##############################################################################################
+## TA FUNCTIONS --------------------------------------------------------------
 
-    # First, replace ',' by '.' if needed ...
+ta_mapper = {'step':'step',     # Dummy value
+             'name':'name',     # Dummy value
+             'Step time' : 'time', 
+             'Time' : 'time_global', 
+             'Stress' : 'stress',
+             'Strain' : 'strain', 
+             'Shear rate' : 'shear_rate', 
+             'Viscosity' : 'viscosity', 
+             'Frequency' : 'freq',
+             'Oscillation stress' : 'osc_stress',
+             'Oscillation strain' : 'osc_strain', 
+             'Oscillation torque': 'osc_torque',
+             'Storage modulus' : 'g_prime', 
+             'Loss modulus' : 'g_second', 
+             'Torque': 'torque', 
+             'Displacement':'angle',
+             'Axial force': 'normal_force', 
+             'Normal stress': 'normal_stress',
+             'Gap': 'gap', 
+             'Temperature': 'temp'}
+
+def read_trios(file_url:str, decimal='.', delim=','):
+
     with open(file_url) as file:
-        contents = ''.join(file.readlines()).replace(',', '.')
-    with open(file_url, 'w') as file:
-        file.write(contents)
-
-    with open(file_url) as file:
-        line = file.readline()
-        meta = {'strs_factor':np.nan, 'strn_factor':np.nan, 'nforce_factor':1, 'step_name':[], 'nsteps':0}
-        step = 0
-        decimal = '.'
-        all_data = []
         
-        # For TA, we will do small PD DataFrames for each step then merge them
-        while line:
-            line = file.readline() 
+        #
+        step = 0
+        info_str = ''
+        line = '_'
+        base_df = pd.DataFrame(columns=ta_mapper.keys(), data=0, index=[-1])
+        all_data = [base_df]
+        all_units = {}
+        
+
+        while line != '':
+
+            while '[step]' not in line and line != '':
+                
+                line = file.readline()
+                info_str += line
+
+            # Here, we then have '[step]' in line
+            name = file.readline().split('-')[0].strip()
+            variables = file.readline().replace('\n', '').split(delim)
+            units = file.readline().replace('\n', '').split(delim)
+            units = {var:unit for (var,unit) in zip(variables, units)}
+            raw_data = ''
+
+            while line != '\n' and line != '':  # Gather actual raw_data
+                line = file.readline()
+                raw_data += line
             
-            # Gather some constants
-            if 'Stress constant' in line:
-                value = line.split('\t')[1].split(' ')[0]
-                meta['strs_factor'] = float(value)
-            if 'Strain constant' in line:
-                value = line.split('\t')[1].split(' ')[0]
-                meta['strn_factor'] = float(value)  
-
-            ### TODO : for cones / plates : check radius and get the conversion from 
-            # normal force to normal stress
-            if 'Geometry Type	Cone plate' in line:
-                _, diam = file.readline(), file.readline().split('\t')[1].split(' ')[0] # Diam usually written in mm 
-                meta['nforce_factor'] = 8/(np.pi*(float(diam)/1000)**2)
-            elif 'Geometry Type	Plate plate' in line:
-                _, diamline = file.readline(), file.readline().split('\t')[1].split(' ')[0]
-                meta['nforce_factor'] = 16/(np.pi*(float(diam)/1000)**2)
-
-
-            # Fetch step names
-            if 'Procedure name' in line:
-                while 'proceduresegments' not in line:
-                    meta['step_name'].append(line.split('\t')[1].rstrip()) # First line is stupid ...
-                    line = file.readline()
-
-            # Handle the actual data
-            if '[step]' in line:
-                data = ''
-                while line != '\n' and line != '':  # Gather actual data
-                    data += line
-                    line = file.readline()
-                now_data = pd.read_table(io.StringIO(data), delimiter='\t', decimal=decimal, skip_blank_lines=True, skiprows=[0,1,3])
-                now_data['step'] = step
-                step += 1
-                all_data.append(now_data)
-
-    meta['nsteps'] = len(all_data)
+            data = pd.read_table(io.StringIO(raw_data), delimiter=delim, decimal=decimal, 
+                                    skip_blank_lines=True, names=variables)
+            data['step'] = step
+            data['name'] = name
+            all_data.append(data)
+            all_units.update(units)
+            step += 1
+            
+    ## Deal with data
     all_data = pd.concat(all_data)
+
+    ## Build metadata dict 
+    info = {}
+    for line in info_str.split('\n'):
+        if delim not in line:
+            continue
+        
+        key, val = line.split(delim)
+        if key == '':
+            continue
+
+        info[key] = val
+
+    info['nsteps'] = np.max(all_data['step']) + 1 # Somehow last value of `step` does not work. 
 
     # Make sure some columns are in the list of columns, because otherwise 
     # it is a pain in the ass to work with them ...
-    enforced_vars = ['Oscillation stress', 'Oscillation strain', 
+    enforced_vars = ['Oscillation stress', 'Oscillation strain', 'Oscillation torque',
                         'Torque', 'Stress', 'Strain', 'Displacement',
-                        'Shear rate', 'Axial force', 'Normal stress']
+                        'Shear rate', 'Axial force', 'Normal stress', 'Frequency', 'Angular frequency']
+    
     for var in enforced_vars:
         if var not in all_data.columns:
             all_data[var] = np.nan
+
+    all_data = all_data.drop(-1)
     
-    return all_data, meta
+    return all_data, all_units, info
 
-def _format_TA(all_data, meta):
+
+def format_trios(data:pd.DataFrame, units:dict, info:dict):
         
-    all_data['name'] = ''
+    prms_dict, units_dict = {}, {}
 
-    for step in range(meta['nsteps']):
-        this_step = all_data['step'] == step
-        all_data.loc[this_step, 'name'] = meta['step_name'][step]
-        all_data.loc[this_step, 'step'] = step
+    for key in ['Gap', 'Diameter', 'Bob diameter', 'Bob length', 'Cup diameter', 'Geometry Inertia', 'Stress constant', 'Strain constant', 'Normal Stress Constant', 'Friction', 'Instrument inertia']:
+        if key in info.keys():
+            prms_dict[key] = float(info[key].split(' ')[0])
+            units_dict[key] = info[key].split(' ')[1]
+
+    units.update(units_dict)
+
+    for step in range(info['nsteps']):
+        this_step = data['step'] == step
 
         # Trying to fill as many additional columns
-        is_oscstress = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation stress']))
-        is_oscstrain = np.any(np.isfinite(all_data.loc[this_step, 'Oscillation strain']))
-        is_torque = np.any(np.isfinite(all_data.loc[this_step, 'Torque']))
-        is_stress = np.any(np.isfinite(all_data.loc[this_step, 'Stress']))
-        is_strain = np.any(np.isfinite(all_data.loc[this_step, 'Strain']))
-        is_displ  = np.any(np.isfinite(all_data.loc[this_step, 'Displacement']))
-        is_shearrate  = np.any(np.isfinite(all_data.loc[this_step, 'Shear rate']))
-        is_axialforce = np.any(np.isfinite(all_data.loc[this_step, 'Axial force']))
-        is_normalstress = np.any(np.isfinite(all_data.loc[this_step, 'Normal stress']))
+        is_strain = np.any(np.isfinite(data.loc[this_step, 'Strain']))
+        is_displ  = np.any(np.isfinite(data.loc[this_step, 'Displacement']))
+        is_shear_rate = np.any(np.isfinite(data.loc[this_step, 'Shear rate']))
+       
+        is_torque = np.any(np.isfinite(data.loc[this_step, 'Torque']))
+        is_stress = np.any(np.isfinite(data.loc[this_step, 'Stress']))
 
-        # If oscillatory stuff, simplify columns
-        if is_oscstress:
-            all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Oscillation stress']
-            all_data.loc[this_step,'Strain'] = all_data.loc[this_step,'Oscillation strain']
-            all_data.loc[this_step,'Shear rate'] = all_data.loc[this_step,'Oscillation strain']* \
-                                                    all_data.loc[this_step,'Frequency']*2*np.pi
+        is_oscstrain = np.any(np.isfinite(data.loc[this_step, 'Oscillation strain']))
+        is_osctorque =  np.any(np.isfinite(data.loc[this_step, 'Oscillation torque']))
+        is_oscstress = np.any(np.isfinite(data.loc[this_step, 'Oscillation stress']))
+        
+        is_frequency = np.any(np.isfinite(data.loc[this_step, 'Frequency']))
+        is_ang_frequency = np.any(np.isfinite(data.loc[this_step, 'Angular frequency']))
+
+        is_axialforce = np.any(np.isfinite(data.loc[this_step, 'Axial force']))
+        is_normalstress = np.any(np.isfinite(data.loc[this_step, 'Normal stress']))
+        is_normalstressconstant = 'Normal Stress constant' in units.keys()
         
         # If Torque / Stress are missing, fill with the other value
         if not is_torque and  is_stress:       
-            all_data.loc[this_step,'Torque'] = all_data.loc[this_step,'Stress']/meta['strn_factor']
+            data.loc[this_step,'Torque'] = data.loc[this_step,'Stress']/prms_dict['Strain constant']
         elif not is_stress and is_torque:
-            all_data.loc[this_step,'Stress'] = all_data.loc[this_step,'Torque']*meta['strs_factor']*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
+            data.loc[this_step,'Stress'] = data.loc[this_step,'Torque']*prms_dict['Stress constant']*1e-6 # Conversion constant in Nm/Pa but torque in txt file in µN.m ...
 
         # Do a bit the same with normal stress
-        if not is_axialforce and is_normalstress:
-            all_data.loc[this_step,'Axial force'] = all_data.loc[this_step,'Normal stress']/meta['nforce_factor']
-        if not is_normalstress and is_axialforce:
-            all_data.loc[this_step,'Normal stress'] = all_data.loc[this_step, 'Axial force']*meta['nforce_factor']    
+        if not is_axialforce and is_normalstress and is_normalstressconstant:
+            data.loc[this_step,'Axial force'] = data.loc[this_step,'Normal stress']/prms_dict['Normal Stress Constant']
+        if not is_normalstress and is_axialforce and is_normalstressconstant:
+            data.loc[this_step,'Normal stress'] = data.loc[this_step, 'Axial force']*prms_dict['Normal Stress Constant']    
+
+        # Samesies with oscillation stresses
+        if not is_osctorque and is_oscstress:
+            data.loc[this_step,'Oscillation torque'] = data.loc[this_step,'Oscillation stress']/prms_dict['Stress constant']
+        if not is_oscstress and is_osctorque:
+            data.loc[this_step,'Oscillation stress'] = data.loc[this_step, 'Oscillation torque']*prms_dict['Stress constant']*1e-6 
+
+        # Angular frequency
+        if not is_frequency and is_ang_frequency:
+            data.loc[this_step, 'Frequency'] = data.loc[this_step, 'Angular frequency']/2/np.pi
         
         # If strain is missing but other things are available (REALLY ?!)
         no_strain = (not is_oscstrain) and (not is_strain)
         if no_strain and is_displ:
-            all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Displacement'] - all_data.loc[this_step,'Displacement'].iloc[0])*meta['strn_factor']
-        elif no_strain and is_shearrate:
-            strain_rebuilt = cumtrapz(x=all_data.loc[this_step,'Step time'], y=all_data.loc[this_step,'Shear rate'])
-            all_data.loc[this_step,'Strain'] = np.insert(strain_rebuilt, 0, 0)
+            data.loc[this_step,'Strain'] = (data.loc[this_step,'Displacement'] - data.loc[this_step,'Displacement'].iloc[0])*prms_dict['Strain constant']
+        elif no_strain and is_shear_rate:
+            t = data.loc[this_step, 'Step time']
+            sr = data.loc[this_step, 'Shear rate']
+            st = np.insert(cumulative_trapezoid(y=sr, x=t), 0, 0)
+            data.loc[this_step, 'Strain'] = st 
         elif no_strain:
-            print(f'_format_TA > Cannot infer strain from step {step} : {meta["step_name"][step]} in TA file.')
+            step_name = data.loc[this_step, 'name'].iloc[0]
+            print(f'format_TA > Cannot infer strain from step {step} [{step_name}] in TA file (no angular displacement).')
 
-        all_data.loc[this_step,'Strain'] = (all_data.loc[this_step,'Strain'] - all_data.loc[this_step,'Strain'].iloc[0])*100
+        data.loc[this_step,'Strain'] = (data.loc[this_step,'Strain'] - data.loc[this_step,'Strain'].iloc[0])*100
 
     # Re-build global time scale 
-    dt = np.array(all_data['Step time'].diff())
-    dt[dt < 0] = 0
-    dt[0] = 0
-    all_data['Time'] = np.cumsum(dt)
+    if units['Step time'] == 'min':
+        data['Step time'] *= 60
+        units['Step time'] = 's'
 
-    # Rename, add compatibility columns
-    all_data = all_data.rename(columns=ta_mapper)
-    all_data = all_data.drop(columns=['Tan(delta)', 'Oscillation stress', 'Oscillation strain', 'Oscillation strain rate'], errors='ignore')
-    all_data['type'] = ''
-    all_data['status'] = ''
-    
-    return all_data
+    dt = np.array(data['Step time'].diff())
+    dt[dt < 0] = 0
+    dt[0] = data.iloc[0]['Step time']
+    data['Time'] = np.cumsum(dt)
+
+    # Rename, remove columns and rows
+    data = data.rename(columns=ta_mapper)
+    data = data.drop(columns=['Tan(delta)', 'Oscillation displacement', 'Raw phase', 'Oscillation strain rate', '', 'Angular frequency'], errors='ignore')
+
+    return data, units
+
+
+
 
 ###############################################################################################
 ## ANTON PAAR FUNCTIONS --------------------------------------------------------------
